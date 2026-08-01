@@ -1,0 +1,10 @@
+{
+  "c2_address": "192.168.1.100:8881",
+  "agent_id": "server-01",
+  "auth_token": "token-for-server-01",
+  "heartbeat_interval_sec": 30,
+  "cmd_timeout": 60,
+  "reconnect_initial_sec": 1,
+  "reconnect_max_sec": 60,
+  "log_level": "INFO"
+}

@@ -1,0 +1,1244 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Remote Console</title>
+    <style>
+        :root {
+            --bg: #f6f7fb;
+            --surface: #ffffff;
+            --surface-2: #f1f3f8;
+            --border: #e4e7ef;
+            --text: #1f2333;
+            --text-2: #6b7280;
+            --text-3: #9ca3af;
+            --accent: #6366f1;
+            --accent-2: #8b5cf6;
+            --accent-soft: #eef0ff;
+            --danger: #ef4444;
+            --danger-soft: #fee2e2;
+            --success: #10b981;
+            --user-bubble: #eef0ff;
+            --ai-bubble: #ffffff;
+            --result-bg: #eef1f7;
+            --result-text: #334155;
+            --result-border: #d5dbe8;
+            --result-inner: #e2e7f1;
+            --result-hi: rgba(255, 255, 255, 0.7);
+            --shadow: 0 10px 30px rgba(31, 35, 51, 0.08);
+            --shadow-sm: 0 2px 8px rgba(31, 35, 51, 0.06);
+        }
+        [data-theme="dark"] {
+            --bg: #0f1117;
+            --surface: #171a21;
+            --surface-2: #1e222b;
+            --border: #2a2f3a;
+            --text: #e7e9ee;
+            --text-2: #9aa3b2;
+            --text-3: #6b7280;
+            --accent: #818cf8;
+            --accent-2: #a78bfa;
+            --accent-soft: #232741;
+            --danger: #f87171;
+            --danger-soft: #3a2226;
+            --success: #34d399;
+            --user-bubble: #232741;
+            --ai-bubble: #1e222b;
+            --result-bg: #11141b;
+            --result-text: #c7d2e3;
+            --result-border: #262d3d;
+            --result-inner: #0b0e14;
+            --result-hi: rgba(255, 255, 255, 0.05);
+            --shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+            --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.25);
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        html, body { height: 100%; }
+        body {
+            font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            transition: background 0.25s, color 0.25s;
+        }
+
+        /* ---------- Header ---------- */
+        .topbar {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            padding: 0 20px;
+            height: 60px;
+            background: var(--surface);
+            border-bottom: 1px solid var(--border);
+            flex-shrink: 0;
+            z-index: 50;
+        }
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-weight: 700;
+            font-size: 15px;
+            letter-spacing: 0.2px;
+            white-space: nowrap;
+        }
+        .brand .logo {
+            width: 30px; height: 30px;
+            border-radius: 9px;
+            background: linear-gradient(135deg, var(--accent), var(--accent-2));
+            display: flex; align-items: center; justify-content: center;
+            color: #fff; font-size: 16px;
+            box-shadow: 0 4px 12px rgba(99, 102, 241, 0.35);
+        }
+        .spacer { flex: 1; }
+        .agent-wrap { display: flex; align-items: center; gap: 10px; }
+        .agent-select {
+            appearance: none;
+            -webkit-appearance: none;
+            background: var(--surface-2);
+            border: 1px solid var(--border);
+            color: var(--text);
+            padding: 8px 34px 8px 12px;
+            border-radius: 10px;
+            font-size: 13px;
+            font-weight: 500;
+            min-width: 170px;
+            cursor: pointer;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: right 10px center;
+        }
+        .agent-select:focus { outline: none; border-color: var(--accent); }
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 5px 10px;
+            border-radius: 999px;
+            font-size: 12px;
+            font-weight: 500;
+            background: var(--accent-soft);
+            color: var(--accent);
+            white-space: nowrap;
+        }
+        .badge .dot {
+            width: 7px; height: 7px; border-radius: 50%;
+            background: currentColor;
+        }
+        .badge.success { color: var(--success); background: rgba(16, 185, 129, 0.12); }
+        .badge.danger { color: var(--danger); background: var(--danger-soft); }
+        .top-actions { display: flex; gap: 8px; }
+
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 7px;
+            padding: 8px 14px;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            background: var(--surface);
+            color: var(--text);
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.15s;
+            white-space: nowrap;
+            font-family: inherit;
+        }
+        .btn:hover { background: var(--surface-2); border-color: var(--text-3); }
+        .btn:active { transform: scale(0.97); }
+        .btn.primary {
+            background: linear-gradient(135deg, var(--accent), var(--accent-2));
+            border: none; color: #fff;
+            box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);
+        }
+        .btn.primary:hover { opacity: 0.92; background: linear-gradient(135deg, var(--accent), var(--accent-2)); }
+        .btn.danger { background: var(--danger); border: none; color: #fff; }
+        .btn.danger:hover { opacity: 0.9; }
+        .btn.ghost { background: transparent; }
+        .btn.small { padding: 6px 10px; font-size: 12px; border-radius: 8px; }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        /* ---------- Command panel ---------- */
+        .command-panel {
+            height: 0;
+            overflow: hidden;
+            background: var(--surface);
+            border-bottom: 1px solid var(--border);
+            transition: height 0.25s ease;
+            flex-shrink: 0;
+        }
+        .command-panel.visible { height: 64px; }
+        .command-panel-inner {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 12px 20px;
+        }
+        .text-input {
+            flex: 1;
+            padding: 10px 14px;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            background: var(--surface-2);
+            color: var(--text);
+            font-size: 14px;
+            font-family: inherit;
+        }
+        .text-input:focus { outline: none; border-color: var(--accent); }
+
+        /* ---------- Main ---------- */
+        .main { flex: 1; display: flex; overflow: hidden; position: relative; }
+        .chat-area { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+
+        .chat-scroll {
+            flex: 1;
+            overflow-y: auto;
+            padding: 24px 0;
+        }
+        .chat-inner {
+            width: 100%;
+            padding: 0 28px;
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+        }
+        .msg {
+            max-width: 82%;
+            padding: 12px 16px;
+            border-radius: 14px;
+            font-size: 14px;
+            line-height: 1.6;
+            white-space: pre-wrap;
+            word-break: break-word;
+            position: relative;
+        }
+        .msg.user {
+            align-self: flex-end;
+            background: var(--user-bubble);
+            border-bottom-right-radius: 4px;
+        }
+        .msg.ai {
+            align-self: flex-start;
+            background: var(--ai-bubble);
+            border: 1px solid var(--border);
+            border-bottom-left-radius: 4px;
+            box-shadow: var(--shadow-sm);
+        }
+        .msg.system {
+            align-self: center;
+            max-width: 92%;
+            background: var(--surface-2);
+            color: var(--text-2);
+            font-size: 13px;
+            border-radius: 10px;
+            border: 1px solid var(--border);
+        }
+        .msg.result {
+            align-self: flex-start;
+            max-width: 96%;
+            background: var(--result-bg);
+            color: var(--result-text);
+            font-family: "SFMono-Regular", "JetBrains Mono", Consolas, monospace;
+            font-size: 12.5px;
+            line-height: 1.55;
+            border: 1px solid var(--result-border);
+            border-radius: 10px;
+            border-top-left-radius: 4px;
+            box-shadow: inset 0 1px 0 var(--result-hi);
+        }
+        .msg.result .cmd-block {
+            background: var(--result-inner);
+            border: none;
+            box-shadow: inset 0 1px 0 var(--result-hi);
+        }
+        .msg .cmd-block {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 10px 12px;
+            margin-top: 8px;
+            font-family: "SFMono-Regular", "JetBrains Mono", Consolas, monospace;
+            font-size: 12.5px;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+        .collapsible-content { max-height: 220px; overflow: hidden; position: relative; transition: max-height 0.3s; }
+        .collapsible-content.expanded { max-height: none; }
+        .collapsible-content::after {
+            content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 40px;
+            background: linear-gradient(transparent, var(--surface-2)); pointer-events: none;
+        }
+        .collapsible-content.expanded::after { display: none; }
+        .collapsible-toggle { display: none; margin-top: 6px; }
+        .collapsible-toggle.show { display: inline-flex; }
+
+        .typing {
+            align-self: flex-start;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 16px;
+            border-radius: 14px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            color: var(--text-2);
+            font-size: 13px;
+        }
+        .typing-dots { display: flex; gap: 4px; }
+        .typing-dots span {
+            width: 7px; height: 7px; border-radius: 50%;
+            background: var(--text-3);
+            animation: bounce 1.3s infinite ease-in-out both;
+        }
+        .typing-dots span:nth-child(2) { animation-delay: 0.15s; }
+        .typing-dots span:nth-child(3) { animation-delay: 0.3s; }
+        @keyframes bounce { 0%,80%,100% { transform: scale(0.6); opacity: 0.5; } 40% { transform: scale(1); opacity: 1; } }
+        .typing.hidden { display: none; }
+
+        .composer {
+            display: flex;
+            align-items: flex-end;
+            gap: 10px;
+            padding: 14px 28px 18px;
+            width: 100%;
+        }
+        .composer textarea {
+            flex: 1;
+            resize: none;
+            padding: 12px 14px;
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            background: var(--surface);
+            color: var(--text);
+            font-size: 14px;
+            font-family: inherit;
+            line-height: 1.5;
+            max-height: 140px;
+            box-shadow: var(--shadow-sm);
+        }
+        .composer textarea:focus { outline: none; border-color: var(--accent); }
+        .composer .send-btn {
+            width: 42px; height: 42px;
+            border-radius: 12px;
+            border: none;
+            background: linear-gradient(135deg, var(--accent), var(--accent-2));
+            color: #fff;
+            cursor: pointer;
+            display: flex; align-items: center; justify-content: center;
+            box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);
+            transition: transform 0.15s, opacity 0.15s;
+            flex-shrink: 0;
+        }
+        .composer .send-btn:hover { opacity: 0.9; }
+        .composer .send-btn:active { transform: scale(0.92); }
+        .composer .send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+        .send-btn svg { width: 18px; height: 18px; }
+
+        /* ---------- Files panel ---------- */
+        .files-panel {
+            position: absolute;
+            inset: 0;
+            background: var(--bg);
+            z-index: 40;
+            display: none;
+            flex-direction: column;
+            padding: 20px;
+            gap: 12px;
+        }
+        .files-panel.visible { display: flex; }
+        .files-head { display: flex; align-items: center; gap: 10px; }
+        .files-head h2 { font-size: 15px; font-weight: 600; }
+        .files-toolbar { display: flex; gap: 8px; flex-wrap: wrap; }
+        .files-path-row { display: flex; gap: 8px; }
+        .files-path-row .text-input { flex: 1; }
+        .files-list {
+            flex: 1;
+            overflow-y: auto;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            box-shadow: var(--shadow-sm);
+        }
+        .file-row {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 10px 16px;
+            border-bottom: 1px solid var(--border);
+            cursor: pointer;
+            transition: background 0.12s;
+        }
+        .file-row:last-child { border-bottom: none; }
+        .file-row:hover { background: var(--surface-2); }
+        .file-row.selected { background: var(--accent-soft); }
+        .file-icon { font-size: 17px; width: 24px; text-align: center; }
+        .file-name { flex: 1; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .file-size { font-size: 12px; color: var(--text-3); }
+        .files-empty { padding: 40px; text-align: center; color: var(--text-3); font-size: 13px; }
+
+        /* ---------- Controls drawer ---------- */
+        .drawer {
+            position: fixed;
+            top: 60px; right: 0; bottom: 0;
+            width: 300px;
+            background: var(--surface);
+            border-left: 1px solid var(--border);
+            box-shadow: var(--shadow);
+            transform: translateX(100%);
+            transition: transform 0.28s ease;
+            z-index: 60;
+            padding: 24px;
+            overflow-y: auto;
+        }
+        .drawer.visible { transform: translateX(0); }
+        .drawer h3 {
+            font-size: 13px;
+            text-transform: uppercase;
+            letter-spacing: 0.6px;
+            color: var(--text-3);
+            margin: 20px 0 12px;
+            font-weight: 600;
+        }
+        .drawer h3:first-child { margin-top: 0; }
+        .drawer .divider { height: 1px; background: var(--border); margin: 20px 0; }
+        .status-row { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; font-size: 13.5px; }
+        .status-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--danger); }
+        .status-dot.authorized { background: var(--success); }
+        .drawer .btn { width: 100%; margin-top: 8px; }
+
+        /* ---------- Modal ---------- */
+        .modal {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(15, 17, 23, 0.55);
+            backdrop-filter: blur(4px);
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+        }
+        .modal.show { display: flex; }
+        .modal-card {
+            background: var(--surface);
+            border-radius: 16px;
+            box-shadow: var(--shadow);
+            padding: 24px;
+            width: 92%;
+            max-width: 540px;
+            max-height: 80vh;
+            overflow-y: auto;
+            border: 1px solid var(--border);
+        }
+        .modal-card h3 { font-size: 16px; margin-bottom: 6px; }
+        .modal-card .sub { color: var(--text-2); font-size: 13px; margin-bottom: 16px; }
+        .modal-commands { background: var(--surface-2); border: 1px solid var(--border); border-radius: 12px; padding: 14px; max-height: 320px; overflow-y: auto; }
+        .modal-cmd-item { padding: 10px; border-bottom: 1px solid var(--border); }
+        .modal-cmd-item:last-child { border-bottom: none; }
+        .cmd-action { font-weight: 600; font-size: 13.5px; color: var(--accent); }
+        .cmd-params { font-size: 12.5px; color: var(--text-2); margin-top: 4px; font-family: monospace; white-space: pre-wrap; }
+        .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
+
+        /* ---------- Generic modal (file input) ---------- */
+        .modal-input { width: 100%; padding: 10px 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); color: var(--text); font-size: 14px; margin: 14px 0; }
+        .modal-input:focus { outline: none; border-color: var(--accent); }
+        .radio-group { display: flex; gap: 20px; margin: 12px 0; }
+        .radio-group label { display: flex; align-items: center; gap: 6px; font-size: 14px; cursor: pointer; }
+        .radio-group input { cursor: pointer; }
+
+        ::-webkit-scrollbar { width: 9px; height: 9px; }
+        ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 6px; }
+        ::-webkit-scrollbar-thumb:hover { background: var(--text-3); }
+        ::-webkit-scrollbar-track { background: transparent; }
+
+        @media (max-width: 720px) {
+            .top-actions .btn span.lbl { display: none; }
+            .chat-inner { padding: 0 14px; }
+            .composer { padding: 12px 14px 16px; }
+            .agent-select { min-width: 120px; }
+        }
+    </style>
+</head>
+<body>
+    <header class="topbar">
+        <div class="brand">
+            <div class="logo">AI</div>
+            <span>Command &amp; Control</span>
+        </div>
+        <div class="agent-wrap">
+            <select id="agentSelector" class="agent-select" title="Active Agent">
+                <option value="">No agents</option>
+            </select>
+            <span class="badge" id="activeAgentLabel"><span class="dot"></span>Agent: --</span>
+        </div>
+        <span class="spacer"></span>
+        <div class="top-actions">
+            <button class="btn" id="commandToggleBtn"><span class="lbl">Command</span></button>
+            <button class="btn" id="filesToggleBtn"><span class="lbl">Files</span></button>
+            <button class="btn" id="sidebarToggleBtn"><span class="lbl">Controls</span></button>
+        </div>
+    </header>
+
+    <div class="command-panel" id="commandPanel">
+        <div class="command-panel-inner">
+            <input type="text" class="text-input" id="commandInput" placeholder="Run a shell command on the active agent..." autocomplete="off">
+            <button class="btn primary" id="commandExecuteBtn">Execute</button>
+        </div>
+    </div>
+
+    <div class="main">
+        <div class="chat-area">
+            <div class="chat-scroll" id="chatScroll">
+                <div class="chat-inner" id="chatBox"></div>
+            </div>
+            <div class="composer">
+                <textarea id="messageInput" rows="1" placeholder="Ask the AI to inspect or manage the remote agent..." autocomplete="off"></textarea>
+                <button class="send-btn" id="sendBtn" title="Send">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+                </button>
+            </div>
+        </div>
+
+        <div class="files-panel" id="filesPanel">
+            <div class="files-toolbar">
+                <button class="btn small" id="filesRefreshBtn">Refresh</button>
+                <button class="btn small" id="filesParentBtn">Parent</button>
+                <button class="btn small" id="filesNewBtn">New</button>
+                <button class="btn small" id="filesCopyBtn">Copy</button>
+                <button class="btn small" id="filesMoveBtn">Move</button>
+                <button class="btn small danger" id="filesDeleteBtn">Delete</button>
+                <button class="btn small" id="filesUploadBtn">Upload</button>
+                <button class="btn small" id="filesDownloadBtn">Download</button>
+                <input type="file" id="filesUploadInput" style="display:none;">
+            </div>
+            <div class="files-path-row">
+                <input type="text" class="text-input" id="filesPathInput" placeholder="Current remote path..." autocomplete="off">
+                <button class="btn small" id="filesAccessBtn">Go</button>
+            </div>
+            <div class="files-list" id="filesList"></div>
+        </div>
+
+        <aside class="drawer" id="sidebar">
+            <h3>Appearance</h3>
+            <button class="btn" id="themeToggle">Switch to Dark Mode</button>
+
+            <div class="divider"></div>
+            <h3>Authorization</h3>
+            <div class="status-row">
+                <span class="status-dot" id="authDot"></span>
+                <span id="authStatus">Authorization Required</span>
+            </div>
+            <button class="btn" id="authToggle">Enable Auto Auth</button>
+
+            <div class="divider"></div>
+            <h3>Session</h3>
+            <button class="btn" id="resetBtn">Reset Conversation</button>
+            <button class="btn danger" id="shutdownBtn">Shutdown Agent</button>
+        </aside>
+    </div>
+
+    <!-- Auth modal -->
+    <div class="modal" id="cmdModal">
+        <div class="modal-card">
+            <h3>Command Authorization</h3>
+            <div class="sub">The AI requests permission to run the following command on the active agent:</div>
+            <div class="modal-commands" id="modalCommands"></div>
+            <div class="modal-actions">
+                <button class="btn danger" id="modalDeny">Deny</button>
+                <button class="btn primary" id="modalAuthorize">Authorize</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Generic input modal (new file/dir) -->
+    <div class="modal" id="filesModal">
+        <div class="modal-card">
+            <h3 id="filesModalTitle">New</h3>
+            <input type="text" class="modal-input" id="filesModalInput" placeholder="Enter name..." value="New">
+            <div class="radio-group">
+                <label><input type="radio" name="filesModalType" value="file" checked> File</label>
+                <label><input type="radio" name="filesModalType" value="dir"> Directory</label>
+            </div>
+            <div class="modal-actions">
+                <button class="btn" id="filesModalCancel">Cancel</button>
+                <button class="btn primary" id="filesModalConfirm">Create</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Path input modal (copy/move) -->
+    <div class="modal" id="filesPathModal">
+        <div class="modal-card">
+            <h3 id="filesPathModalTitle">Copy / Move</h3>
+            <input type="text" class="modal-input" id="filesPathModalInput" placeholder="Enter destination path...">
+            <div class="modal-actions">
+                <button class="btn" id="filesPathModalCancel">Cancel</button>
+                <button class="btn primary" id="filesPathModalConfirm">Confirm</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let pendingCommand = null;
+
+        const chatBox = document.getElementById('chatBox');
+        const chatScroll = document.getElementById('chatScroll');
+        const messageInput = document.getElementById('messageInput');
+        const sendBtn = document.getElementById('sendBtn');
+        const cmdModal = document.getElementById('cmdModal');
+        const modalCommands = document.getElementById('modalCommands');
+        const authDot = document.getElementById('authDot');
+        const authStatus = document.getElementById('authStatus');
+        const authToggle = document.getElementById('authToggle');
+        const resetBtn = document.getElementById('resetBtn');
+        const sidebar = document.getElementById('sidebar');
+        const filesPanel = document.getElementById('filesPanel');
+        let autoScrollEnabled = true;
+
+        // ---------------- config / agents ----------------
+        async function loadConfig() {
+            try {
+                const res = await fetch('/api/config');
+                const config = await res.json();
+                updateAuthUI(config.auth_mode);
+            } catch (e) {}
+            await loadAgents();
+            await loadHistory();
+        }
+
+        async function loadAgents() {
+            try {
+                const res = await fetch('/api/agents');
+                const data = await res.json();
+                const sel = document.getElementById('agentSelector');
+                const activeLabel = document.getElementById('activeAgentLabel');
+                sel.innerHTML = '';
+                if (!data.agents || data.agents.length === 0) {
+                    const opt = document.createElement('option');
+                    opt.value = '';
+                    opt.textContent = 'No agents connected';
+                    sel.appendChild(opt);
+                    activeLabel.textContent = 'Agent: --';
+                    activeLabel.className = 'badge danger';
+                    return;
+                }
+                data.agents.forEach(a => {
+                    const opt = document.createElement('option');
+                    opt.value = a.id;
+                    opt.textContent = `${a.id} (${a.os})`;
+                    if (a.id === data.active) opt.selected = true;
+                    sel.appendChild(opt);
+                });
+                const active = data.agents.find(a => a.id === data.active);
+                activeLabel.textContent = 'Agent: ' + (active ? `${active.id}` : '--');
+                activeLabel.className = 'badge success';
+            } catch (e) {
+                console.warn('loadAgents failed', e);
+            }
+        }
+
+        async function switchAgent(agentId) {
+            if (!agentId) return;
+            const formData = new FormData();
+            formData.append('agent_id', agentId);
+            const res = await fetch('/api/agents/switch', { method: 'POST', body: formData });
+            const data = await res.json();
+            if (data.success) {
+                await loadAgents();
+                await loadHistory();
+            } else {
+                addMessage('Switch failed: ' + (data.error || 'unknown'), 'system');
+            }
+        }
+
+        function isResultEntry(role, content) {
+            if (role !== 'user') return false;
+            if (!content) return false;
+            return content.startsWith('Command execution result:') ||
+                   content.startsWith('JSON parse error occurred') ||
+                   content.startsWith('[Network Error]') ||
+                   content.startsWith('User denied command execution');
+        }
+
+        async function loadHistory() {
+            chatBox.innerHTML = '';
+            try {
+                const res = await fetch('/api/history');
+                const data = await res.json();
+                const history = data.history || [];
+                history.forEach(item => {
+                    if (item && item.content) {
+                        let type;
+                        if (isResultEntry(item.role, item.content)) {
+                            type = 'result';
+                        } else {
+                            type = item.role === 'user' ? 'user' : 'ai';
+                        }
+                        addMessage(item.content, type);
+                    }
+                });
+            } catch (e) {
+                console.warn('loadHistory failed', e);
+            }
+            chatBox.appendChild(typingIndicator);
+            chatScroll.scrollTop = chatScroll.scrollHeight;
+        }
+
+        function updateAuthUI(authMode) {
+            const isAuto = authMode === 1;
+            if (isAuto) {
+                authDot.classList.add('authorized');
+                authStatus.textContent = 'Auto Authorized';
+                authToggle.textContent = 'Require Authorization';
+            } else {
+                authDot.classList.remove('authorized');
+                authStatus.textContent = 'Authorization Required';
+                authToggle.textContent = 'Enable Auto Auth';
+            }
+        }
+
+        // ---------------- chat ----------------
+        function addMessage(content, type, commands = null) {
+            const div = document.createElement('div');
+            div.className = 'msg ' + type;
+            let displayText = String(content ?? '');
+
+            if (commands && commands.length > 0) {
+                const parts = displayText.split(/(```json\n?[\s\S]*?```)/g);
+                parts.forEach(part => {
+                    if (part.match(/^```json\n?([\s\S]*?)```$/)) {
+                        const json = part.replace(/^```json\n?([\s\S]*?)```$/, '$1');
+                        const cmdDiv = document.createElement('div');
+                        cmdDiv.className = 'cmd-block';
+                        try {
+                            const obj = JSON.parse(json);
+                            cmdDiv.textContent = 'Action: ' + obj.action + '\n' + JSON.stringify(obj, null, 2);
+                        } catch {
+                            cmdDiv.textContent = json;
+                        }
+                        div.appendChild(cmdDiv);
+                    } else {
+                        const span = document.createElement('span');
+                        span.textContent = part;
+                        div.appendChild(span);
+                    }
+                });
+            } else {
+                const span = document.createElement('span');
+                span.textContent = displayText;
+                div.appendChild(span);
+            }
+
+            if (type === 'system' && displayText.length > 500) {
+                const wrapper = document.createElement('div');
+                const inner = document.createElement('div');
+                inner.className = 'collapsible-content';
+                while (div.firstChild) inner.appendChild(div.firstChild);
+                wrapper.appendChild(inner);
+                const toggle = document.createElement('button');
+                toggle.className = 'btn small ghost collapsible-toggle show';
+                toggle.textContent = 'Show more';
+                toggle.onclick = () => {
+                    const expanded = inner.classList.toggle('expanded');
+                    toggle.textContent = expanded ? 'Show less' : 'Show more';
+                };
+                wrapper.appendChild(toggle);
+                div.appendChild(wrapper);
+            }
+
+            chatBox.appendChild(div);
+            if (autoScrollEnabled) chatScroll.scrollTop = chatScroll.scrollHeight;
+        }
+
+        const typingIndicator = document.createElement('div');
+        typingIndicator.className = 'typing hidden';
+        typingIndicator.innerHTML = '<div class="typing-dots"><span></span><span></span><span></span></div><span class="typing-text">AI is thinking...</span>';
+        chatBox.appendChild(typingIndicator);
+
+        function setTyping(text, show) {
+            if (show) {
+                typingIndicator.querySelector('.typing-text').textContent = text;
+                typingIndicator.classList.remove('hidden');
+            } else {
+                typingIndicator.classList.add('hidden');
+            }
+        }
+
+        async function sendMessage() {
+            const msg = messageInput.value.trim();
+            if (!msg) return;
+            autoScrollEnabled = true;
+            addMessage(msg, 'user');
+            messageInput.value = '';
+            messageInput.style.height = 'auto';
+
+            const aiMsgDiv = document.createElement('div');
+            aiMsgDiv.className = 'msg ai';
+            const aiSpan = document.createElement('span');
+            aiSpan.textContent = '';
+            aiMsgDiv.appendChild(aiSpan);
+            chatBox.appendChild(aiMsgDiv);
+
+            sendBtn.disabled = true;
+            pendingCommand = null;
+
+            try {
+                const formData = new FormData();
+                formData.append('message', msg);
+                const res = await fetch('/api/chat-stream', { method: 'POST', body: formData });
+                const reader = res.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop();
+                    for (const line of lines) {
+                        if (!line.startsWith('data: ')) continue;
+                        try {
+                            const data = JSON.parse(line.slice(6));
+                            switch (data.type) {
+                                case 'answering':
+                                    setTyping(`AI is thinking... (Round ${data.iteration})`, true);
+                                    if (data.iteration > 1) aiSpan.textContent += '\n\n';
+                                    break;
+                                case 'chunk':
+                                    aiSpan.textContent += data.content;
+                                    if (autoScrollEnabled) chatScroll.scrollTop = chatScroll.scrollHeight;
+                                    break;
+                                case 'response_done':
+                                    setTyping('', false);
+                                    break;
+                                case 'auth_required':
+                                    setTyping('', false);
+                                    pendingCommand = data.commands[0];
+                                    break;
+                                case 'waiting_auth':
+                                    showCommandModal(pendingCommand);
+                                    break;
+                                case 'executing':
+                                    setTyping('Executing commands...', true);
+                                    break;
+                                case 'execution_done':
+                                    setTyping('', false);
+                                    if (data.results) {
+                                        for (const ex of data.results) {
+                                            let info = '';
+                                            if (ex.action === 'exec_cmd' && ex.params && ex.params.command) info = ` [${ex.params.command}]`;
+                                            else if (ex.params && ex.params.path) info = ` [${ex.params.path}]`;
+                                            addMessage(`[${ex.action}]${info}\n${ex.result}`, 'result');
+                                        }
+                                    }
+                                    break;
+                                case 'done':
+                                    pendingCommand = null;
+                                    break;
+                                case 'error':
+                                    aiSpan.textContent += `\n[Error: ${data.error}]`;
+                                    setTyping('', false);
+                                    break;
+                                case 'auth_denied':
+                                    addMessage(data.message || 'Authorization denied', 'system');
+                                    break;
+                            }
+                        } catch (e) {}
+                    }
+                }
+                setTyping('', false);
+                await loadConfig();
+            } catch (err) {
+                addMessage('Error: ' + err.message, 'system');
+                setTyping('', false);
+            } finally {
+                pendingCommand = null;
+                sendBtn.disabled = false;
+            }
+        }
+
+        function showCommandModal(cmd) {
+            modalCommands.innerHTML = '';
+            if (cmd) {
+                const item = document.createElement('div');
+                item.className = 'modal-cmd-item';
+                const action = document.createElement('div');
+                action.className = 'cmd-action';
+                action.textContent = cmd.action;
+                const params = document.createElement('div');
+                params.className = 'cmd-params';
+                params.textContent = JSON.stringify(cmd, null, 2);
+                item.appendChild(action);
+                item.appendChild(params);
+                modalCommands.appendChild(item);
+            }
+            cmdModal.classList.add('show');
+        }
+
+        async function submitAuth(authorized) {
+            cmdModal.classList.remove('show');
+            const cmd = pendingCommand;
+            try {
+                const formData = new FormData();
+                formData.append('authorized', authorized ? 'true' : 'false');
+                formData.append('commands', JSON.stringify(authorized && cmd ? [cmd] : []));
+                await fetch('/api/authorize-execute', { method: 'POST', body: formData });
+            } catch (err) {
+                addMessage('Error: ' + err.message, 'system');
+            } finally {
+                pendingCommand = null;
+            }
+        }
+
+        // ---------------- events ----------------
+        sendBtn.addEventListener('click', sendMessage);
+        messageInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendMessage();
+            }
+        });
+        messageInput.addEventListener('input', () => {
+            messageInput.style.height = 'auto';
+            messageInput.style.height = Math.min(messageInput.scrollHeight, 140) + 'px';
+        });
+
+        document.getElementById('modalDeny').addEventListener('click', async () => {
+            addMessage('Command execution denied by user.', 'system');
+            await submitAuth(false);
+        });
+        document.getElementById('modalAuthorize').addEventListener('click', async () => {
+            await submitAuth(true);
+        });
+
+        authToggle.addEventListener('click', async () => {
+            const currentMode = document.getElementById('authStatus').textContent;
+            const newMode = currentMode.includes('Required') ? '1' : '0';
+            const formData = new FormData();
+            formData.append('mode', newMode);
+            await fetch('/api/set-auth', { method: 'POST', body: formData });
+            await loadConfig();
+        });
+
+        resetBtn.addEventListener('click', async () => {
+            await fetch('/api/reset', { method: 'POST' });
+            await loadConfig();
+            addMessage('Conversation reset.', 'system');
+        });
+
+        document.getElementById('shutdownBtn').addEventListener('click', async () => {
+            if (!confirm('Shut down the active Agent? It will disconnect and exit.')) return;
+            try {
+                const res = await fetch('/api/shutdown', { method: 'POST' });
+                const data = await res.json();
+                addMessage(data.success ? `Shutdown command sent to ${data.agent}.` : ('Shutdown failed: ' + (data.error || 'unknown')), 'system');
+            } catch (err) {
+                addMessage('Error: ' + err.message, 'system');
+            }
+        });
+
+        const agentSelector = document.getElementById('agentSelector');
+        agentSelector.addEventListener('change', async () => { await switchAgent(agentSelector.value); });
+        setInterval(loadAgents, 5000);
+
+        // ---------------- theme ----------------
+        const themeToggle = document.getElementById('themeToggle');
+        function setTheme(dark) {
+            if (dark) {
+                document.body.setAttribute('data-theme', 'dark');
+                themeToggle.textContent = 'Switch to Light Mode';
+            } else {
+                document.body.removeAttribute('data-theme');
+                themeToggle.textContent = 'Switch to Dark Mode';
+            }
+            localStorage.setItem('theme', dark ? 'dark' : 'light');
+        }
+        themeToggle.addEventListener('click', () => {
+            setTheme(document.body.getAttribute('data-theme') !== 'dark');
+        });
+        if (localStorage.getItem('theme') === 'dark') setTheme(true);
+
+        chatScroll.addEventListener('scroll', () => {
+            const atBottom = chatScroll.scrollHeight - chatScroll.clientHeight - chatScroll.scrollTop < 50;
+            autoScrollEnabled = atBottom;
+        });
+
+        // ---------------- panels ----------------
+        const commandPanel = document.getElementById('commandPanel');
+        const commandInput = document.getElementById('commandInput');
+        const commandExecuteBtn = document.getElementById('commandExecuteBtn');
+
+        function closeAllPanels() {
+            sidebar.classList.remove('visible');
+            commandPanel.classList.remove('visible');
+            filesPanel.classList.remove('visible');
+        }
+
+        document.getElementById('sidebarToggleBtn').addEventListener('click', () => {
+            const isOpen = sidebar.classList.contains('visible');
+            closeAllPanels();
+            if (!isOpen) sidebar.classList.add('visible');
+        });
+
+        document.getElementById('commandToggleBtn').addEventListener('click', () => {
+            const isOpen = commandPanel.classList.contains('visible');
+            closeAllPanels();
+            if (!isOpen) {
+                commandPanel.classList.add('visible');
+                commandInput.focus();
+            }
+        });
+
+        document.getElementById('filesToggleBtn').addEventListener('click', () => {
+            const isOpen = filesPanel.classList.contains('visible');
+            closeAllPanels();
+            if (!isOpen) {
+                filesPanel.classList.add('visible');
+                loadFilesList();
+            }
+        });
+
+        // ---------------- file manager ----------------
+        const filesList = document.getElementById('filesList');
+        const filesPathInput = document.getElementById('filesPathInput');
+        const filesModal = document.getElementById('filesModal');
+        const filesModalTitle = document.getElementById('filesModalTitle');
+        const filesModalInput = document.getElementById('filesModalInput');
+        const filesModalConfirm = document.getElementById('filesModalConfirm');
+        const filesModalCancel = document.getElementById('filesModalCancel');
+        const filesUploadInput = document.getElementById('filesUploadInput');
+        const filesPathModal = document.getElementById('filesPathModal');
+        const filesPathModalTitle = document.getElementById('filesPathModalTitle');
+        const filesPathModalInput = document.getElementById('filesPathModalInput');
+        const filesPathModalConfirm = document.getElementById('filesPathModalConfirm');
+        const filesPathModalCancel = document.getElementById('filesPathModalCancel');
+
+        let selectedFile = null;
+        let filesModalCallback = null;
+        let filesPathModalCallback = null;
+
+        async function loadFilesList() {
+            try {
+                const res = await fetch('/api/files/list');
+                const data = await res.json();
+                if (data.error) {
+                    filesPathInput.value = 'Error: ' + data.error;
+                    filesList.innerHTML = '';
+                    return;
+                }
+                filesPathInput.value = data.current_path;
+                filesList.innerHTML = '';
+                selectedFile = null;
+
+                if (!data.items || data.items.length === 0) {
+                    const empty = document.createElement('div');
+                    empty.className = 'files-empty';
+                    empty.textContent = 'Empty directory';
+                    filesList.appendChild(empty);
+                    return;
+                }
+
+                data.items.forEach(item => {
+                    const div = document.createElement('div');
+                    div.className = 'file-row';
+                    div.dataset.name = item.name;
+                    div.dataset.isDir = item.is_dir;
+                    div.innerHTML = `
+                        <span class="file-icon">${item.is_dir ? '📁' : '📄'}</span>
+                        <span class="file-name"></span>
+                        <span class="file-size">${item.is_dir ? '' : formatSize(item.size)}</span>
+                    `;
+                    div.querySelector('.file-name').textContent = item.name;
+                    div.addEventListener('click', () => selectFile(div, item));
+                    div.addEventListener('dblclick', async () => {
+                        if (item.is_dir) await enterDir(item.name);
+                    });
+                    filesList.appendChild(div);
+                });
+            } catch (err) {
+                filesPathInput.value = 'Error: ' + err.message;
+            }
+        }
+
+        async function enterDir(name) {
+            const formData = new FormData();
+            formData.append('dirname', name);
+            const res = await fetch('/api/files/chdir', { method: 'POST', body: formData });
+            const result = await res.json();
+            if (result.error) filesPathInput.value = 'Error: ' + result.error;
+            else await loadFilesList();
+        }
+
+        function formatSize(bytes) {
+            if (bytes < 1024) return bytes + ' B';
+            if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+            if (bytes < 1073741824) return (bytes / 1048576).toFixed(1) + ' MB';
+            return (bytes / 1073741824).toFixed(1) + ' GB';
+        }
+
+        function selectFile(element, item) {
+            document.querySelectorAll('.file-row.selected').forEach(el => el.classList.remove('selected'));
+            element.classList.add('selected');
+            selectedFile = item;
+        }
+
+        document.getElementById('filesRefreshBtn').addEventListener('click', loadFilesList);
+        document.getElementById('filesParentBtn').addEventListener('click', async () => {
+            const res = await fetch('/api/files/parent', { method: 'POST' });
+            const data = await res.json();
+            if (data.error) filesPathInput.value = 'Error: ' + data.error;
+            else await loadFilesList();
+        });
+
+        document.getElementById('filesAccessBtn').addEventListener('click', async () => {
+            const path = filesPathInput.value.trim();
+            if (!path) { filesPathInput.value = 'Error: Please enter a path'; return; }
+            await enterDir(path);
+        });
+        filesPathInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') document.getElementById('filesAccessBtn').click(); });
+
+        document.getElementById('filesNewBtn').addEventListener('click', () => {
+            filesModalTitle.textContent = 'New';
+            filesModalInput.value = 'New';
+            document.querySelector('input[name="filesModalType"][value="file"]').checked = true;
+            filesModalConfirm.textContent = 'Create';
+            filesModalCallback = async () => {
+                const name = filesModalInput.value.trim() || 'New';
+                const type = document.querySelector('input[name="filesModalType"]:checked').value;
+                const formData = new FormData();
+                if (type === 'file') {
+                    formData.append('filename', name);
+                    await fetch('/api/files/new', { method: 'POST', body: formData });
+                } else {
+                    formData.append('dirname', name);
+                    await fetch('/api/files/mkdir', { method: 'POST', body: formData });
+                }
+                await loadFilesList();
+            };
+            filesModal.classList.add('show');
+            filesModalInput.focus();
+            filesModalInput.select();
+        });
+
+        document.getElementById('filesDeleteBtn').addEventListener('click', async () => {
+            if (!selectedFile) { alert('Please select a file or directory to delete.'); return; }
+            if (!confirm(`Delete "${selectedFile.name}"?`)) return;
+            const formData = new FormData();
+            formData.append('filepath', filesPathInput.value + '/' + selectedFile.name);
+            const res = await fetch('/api/files/delete', { method: 'POST', body: formData });
+            const data = await res.json();
+            if (data.error) alert('Error: ' + data.error);
+            else await loadFilesList();
+        });
+
+        document.getElementById('filesUploadBtn').addEventListener('click', () => filesUploadInput.click());
+        filesUploadInput.addEventListener('change', async () => {
+            const file = filesUploadInput.files[0];
+            if (!file) return;
+            const formData = new FormData();
+            formData.append('file', file);
+            const res = await fetch('/api/files/upload', { method: 'POST', body: formData });
+            const data = await res.json();
+            if (data.error) alert('Error: ' + data.error);
+            else await loadFilesList();
+            filesUploadInput.value = '';
+        });
+
+        document.getElementById('filesDownloadBtn').addEventListener('click', () => {
+            if (!selectedFile || selectedFile.is_dir) { alert('Please select a file to download.'); return; }
+            const path = filesPathInput.value + '/' + selectedFile.name;
+            window.open('/api/files/download?src=' + encodeURIComponent(path), '_blank');
+        });
+
+        filesModalCancel.addEventListener('click', () => filesModal.classList.remove('show'));
+        filesModalConfirm.addEventListener('click', () => {
+            if (filesModalCallback) filesModalCallback();
+            filesModal.classList.remove('show');
+        });
+        filesModalInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') filesModalConfirm.click(); });
+
+        function openPathModal(title, srcPath, confirmText, callback) {
+            filesPathModalTitle.textContent = title;
+            filesPathModalInput.value = srcPath;
+            filesPathModalConfirm.textContent = confirmText;
+            filesPathModalCallback = callback;
+            filesPathModal.classList.add('show');
+            filesPathModalInput.focus();
+            filesPathModalInput.select();
+        }
+
+        document.getElementById('filesCopyBtn').addEventListener('click', () => {
+            if (!selectedFile) { alert('Please select a file or directory to copy.'); return; }
+            const srcPath = filesPathInput.value + '/' + selectedFile.name;
+            openPathModal('Copy: ' + selectedFile.name, srcPath, 'Copy', async (destPath) => {
+                if (!destPath) { alert('Please enter a destination path.'); return; }
+                const formData = new FormData();
+                formData.append('src', srcPath);
+                formData.append('dest', destPath);
+                const res = await fetch('/api/files/copy', { method: 'POST', body: formData });
+                const data = await res.json();
+                if (data.error) alert('Error: ' + data.error);
+                else await loadFilesList();
+            });
+        });
+
+        document.getElementById('filesMoveBtn').addEventListener('click', () => {
+            if (!selectedFile) { alert('Please select a file or directory to move.'); return; }
+            const srcPath = filesPathInput.value + '/' + selectedFile.name;
+            openPathModal('Move: ' + selectedFile.name, srcPath, 'Move', async (destPath) => {
+                if (!destPath) { alert('Please enter a destination path.'); return; }
+                const formData = new FormData();
+                formData.append('src', srcPath);
+                formData.append('dest', destPath);
+                const res = await fetch('/api/files/move', { method: 'POST', body: formData });
+                const data = await res.json();
+                if (data.error) alert('Error: ' + data.error);
+                else await loadFilesList();
+            });
+        });
+
+        filesPathModalCancel.addEventListener('click', () => filesPathModal.classList.remove('show'));
+        filesPathModalConfirm.addEventListener('click', () => {
+            const value = filesPathModalInput.value.trim();
+            if (filesPathModalCallback) filesPathModalCallback(value);
+            filesPathModal.classList.remove('show');
+        });
+        filesPathModalInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') filesPathModalConfirm.click(); });
+
+        // ---------------- direct command ----------------
+        async function executeDirectCommand(cmd) {
+            try {
+                const formData = new FormData();
+                formData.append('command', cmd);
+                const res = await fetch('/api/exec-cmd', { method: 'POST', body: formData });
+                const data = await res.json();
+                return data.error ? `[exec_cmd] [${cmd}]\nError: ${data.error}` : `[exec_cmd] [${cmd}]\n${data.result}`;
+            } catch (err) {
+                return `[exec_cmd] [${cmd}]\nError: ${err.message}`;
+            }
+        }
+
+        async function sendDirectCommand() {
+            const cmd = commandInput.value.trim();
+            if (!cmd) return;
+            addMessage(cmd, 'user');
+            commandInput.value = '';
+            commandExecuteBtn.disabled = true;
+            const result = await executeDirectCommand(cmd);
+            addMessage(result, 'system');
+            commandExecuteBtn.disabled = false;
+        }
+
+        commandExecuteBtn.addEventListener('click', sendDirectCommand);
+        commandInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') sendDirectCommand(); });
+
+        loadConfig();
+    </script>
+</body>
+</html>

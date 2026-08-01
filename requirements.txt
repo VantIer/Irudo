@@ -1,0 +1,6 @@
+# AI Remote Control Tool - runtime dependencies
+# Python 3.9+
+openai>=1.0.0
+fastapi>=0.100.0
+uvicorn>=0.23.0
+python-multipart>=0.0.6
