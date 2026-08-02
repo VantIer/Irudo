@@ -30,6 +30,8 @@ All Bots connect to a common C2 and are controlled by the same user/LLM, much li
 - **远程关机**：下发 `shutdown` 指令关闭远程端进程（非系统关机）
 - **心跳保活**：远程端周期性心跳，C2 watchdog 超时自动剔除失联 Agent
 - **CLI 与 Web 双界面**：Web 支持 Agent 切换、文件管理、授权弹窗、深浅主题
+- **多语言远程端**：除 Python 远程端（`remote/`）外，提供零三方依赖的 **C 版远程端**（`remote-c/`），win/linux 下 gcc 直接编译、参数与 Python 版一致
+- **一键打包**：`build/` 提供 C2 / 远程端独立的 bat/sh 编译脚本，产出单文件可执行程序
 
 ## 架构
 
@@ -58,11 +60,12 @@ C2 端（控制端）                            远程端（被控端 / Agent�
 XXX/
 ├── 设计文档.md                # 详细设计
 ├── README.md                  # 本文件
-├── requirements.txt
+├── requirements.txt           # 运行时依赖（含 pyinstaller 编译依赖）
 ├── config_c2.example.json     # C2 配置示例
 ├── config_remote.example.json # 远程端配置示例
-├── start_c2.bat / start_c2.sh
-├── start_remote.bat / start_remote.sh
+├── build/                     # 编译脚本（PyInstaller 单文件产物）
+│   ├── build.bat / build.sh                # C2 端编译
+│   └── build_remote.bat / build_remote.sh  # 远程端编译
 ├── web/
 │   └── index.html             # C2 Web UI
 ├── common/                    # 共享：协议
@@ -80,23 +83,59 @@ XXX/
 │   ├── model.py               # 多轮对话 + per-Agent 历史
 │   ├── main.py                # C2 入口（CLI/Web）
 │   └── web_server.py          # C2 Web（FastAPI + NetworkServer 共存）
-└── remote/                    # 远程端（独立包）
-    ├── agent_client.py        # TCP 拨号 + 心跳 + 重连
-    ├── handler.py             # 包解析 + 指令路由 + 文件传输
-    ├── local_executor.py      # 文件/Shell 执行
-    ├── file_transfer.py       # 数据包收发
-    └── main.py                # 远程端入口
+├── remote/                    # 远程端（Python，独立包）
+│   ├── agent_client.py        # TCP 拨号 + 心跳 + 重连
+│   ├── handler.py             # 包解析 + 指令路由 + 文件传输
+│   ├── local_executor.py      # 文件/Shell 执行
+│   ├── file_transfer.py       # 数据包收发
+│   └── main.py                # 远程端入口
+└── remote-c/                  # 远程端（C 版，零三方依赖，gcc 编译）
+    ├── agent.h / protocol.c / actions.c / exec_cmd.c / main.c
+    └── COMPILE.txt            # 编译指令与用法
 ```
 
 ## 环境要求
 
 - Python 3.9+
+- （可选）gcc / MinGW-w64：编译 C 版远程端（`remote-c/`）
 - 远程端与 C2 端可互相访问 TCP 端口（默认 C2 监听 `8881`，Web 面板 `8880`）
 
 ## 安装
 
 ```bash
-pip install -r requirements.txt
+pip install -r requirements.txt   # 运行时依赖（含 pyinstaller）
+```
+
+## 编译打包
+
+项目提供两套独立的 PyInstaller 编译脚本（`build/`），产物为**单文件可执行程序**：
+
+| 脚本                                        | 产物                            | 说明                     |
+| ------------------------------------------- | ------------------------------- | ------------------------ |
+| `build/build.bat` / `build/build.sh`        | `build/irudo_c2(.exe)`          | C2 端（CLI + Web 双模式）|
+| `build/build_remote.bat` / `build/build_remote.sh` | `build/irudo_remote(.exe)` | Python 远程端          |
+
+```bash
+# Windows
+build\build.bat            # C2 端
+build\build_remote.bat     # Python 远程端
+
+# Linux / macOS
+./build/build.sh           # C2 端
+./build/build_remote.sh    # Python 远程端
+```
+
+> 编译依赖 PyInstaller（`requirements.txt` 已包含；脚本在缺失时也会自动安装）。
+> 配置不嵌入可执行程序：运行产物时需用 `--config` 指定外部配置文件路径。
+
+**C 版远程端**无需编译脚本，直接使用 gcc 编译（详见 `remote-c/COMPILE.txt`）：
+
+```bash
+# Linux
+gcc -O2 -Wall -Wextra -o irudo_remote remote-c/protocol.c remote-c/actions.c remote-c/exec_cmd.c remote-c/main.c
+
+# Windows (MinGW-w64)
+gcc -O2 -Wall -Wextra -o irudo_remote.exe remote-c/protocol.c remote-c/actions.c remote-c/exec_cmd.c remote-c/main.c -lws2_32
 ```
 
 ## 配置
@@ -129,11 +168,11 @@ python -m src.main --mode cli --config config_c2.json
 python -m src.main --mode web --config config_c2.json
 ```
 
-启动脚本：
+编译为单文件后（见「编译打包」）：
 
 ```bash
-./start_c2.sh cli     # Linux/macOS
-start_c2.bat cli      # Windows（cli 或 web）
+./build/irudo_c2 --mode cli --config config_c2.json    # Linux/macOS
+build\irudo_c2.exe --mode web --config config_c2.json  # Windows
 ```
 
 ### 远程端
@@ -157,6 +196,12 @@ python -m remote.main \
 
 ```bash
 python -m remote.main --config base.json --c2-address other:8881
+```
+
+**C 版远程端**（`remote-c/` 编译产物，参数与 Python 版一致）：
+
+```bash
+./irudo_remote --c2-address 192.168.1.100:8881 --agent-id server-01 --auth-token token-for-server-01
 ```
 
 ### Web 界面
@@ -201,8 +246,11 @@ python -m remote.main --config base.json --c2-address other:8881
 python -m src.main --mode cli --config config_c2.json
 python -m remote.main --config config_remote.json
 
-# 方式二：纯命令行远程端
+# 方式二：纯命令行 Python 远程端
 python -m remote.main --c2-address 127.0.0.1:8881 --agent-id server-01 --auth-token token-for-server-01
+
+# 方式三：C 版远程端（remote-c/ 编译产物，协议与 Python 版完全一致）
+./irudo_remote --c2-address 127.0.0.1:8881 --agent-id server-01 --auth-token token-for-server-01
 ```
 
 ## 免责声明

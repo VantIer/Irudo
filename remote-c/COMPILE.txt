@@ -1,0 +1,77 @@
+================================================================================
+ Irudo C Remote Agent - Compile Instructions
+================================================================================
+
+This is a self-contained C implementation of the remote Agent that speaks the
+same binary protocol as the Python remote (remote/). It has NO third-party
+library dependencies - only the standard C library + OS socket APIs
+(winsock2 on Windows, sockets on Linux/macOS).
+
+Files:
+    agent.h        shared declarations / protocol constants
+    protocol.c     packet + TLV codec, wire I/O, small helpers
+    actions.c      local file system actions (list/read/write/edit/copy/...)
+    exec_cmd.c     cross-platform shell command execution with timeout
+    main.c         entry point: config, dialing, register, heartbeat, dispatch
+
+--------------------------------------------------------------------------------
+ Compiling on Linux (or macOS)
+--------------------------------------------------------------------------------
+
+    gcc -O2 -Wall -Wextra -o irudo_remote protocol.c actions.c exec_cmd.c main.c
+
+Resulting binary: ./irudo_remote
+
+On very old glibc systems clock_gettime may need "-lrt":
+
+    gcc -O2 -Wall -Wextra -o irudo_remote protocol.c actions.c exec_cmd.c main.c -lrt
+
+--------------------------------------------------------------------------------
+ Compiling on Windows (MinGW-w64 gcc)
+--------------------------------------------------------------------------------
+
+    gcc -O2 -Wall -Wextra -o irudo_remote.exe protocol.c actions.c exec_cmd.c main.c -lws2_32
+
+Resulting binary: irudo_remote.exe
+
+(agent.h also contains "#pragma comment(lib, \"ws2_32.lib\")" which makes
+MinGW link winsock automatically; the explicit -lws2_32 is kept for safety.)
+
+--------------------------------------------------------------------------------
+ Run
+
+Example (all CLI args, no config file needed):
+
+    ./irudo_remote --c2-address 192.168.1.100:8881 \
+                   --agent-id BOT-01 \
+                   --auth-token token-for-server-01 \
+                   --heartbeat-interval 30 \
+                   --cmd-timeout 60 \
+                   --reconnect-initial 1 \
+                   --reconnect-max 60
+
+Or with a JSON config file (same flat schema as config_remote.json):
+
+    ./irudo_remote --config config_remote.json
+
+CLI arguments override config-file values; config-file values override the
+built-in defaults. Required: c2-address, agent-id, auth-token.
+
+The agent is headless: it dials the C2, registers, sends heartbeats every
+--heartbeat-interval seconds, and reconnects with exponential backoff
+(--reconnect-initial ... --reconnect-max) when the connection drops. All
+file / shell operations are driven by the C2 over the protocol.
+
+--------------------------------------------------------------------------------
+ Protocol compatibility
+
+Header 16 bytes: request_id (uint64 LE) | body_len (uint32 LE) | reserved (3)
+| cmd/flag (1). Request bodies are TLV chains (uint32 LE length + UTF-8 data).
+Responses are single UTF-8 strings. File transfer uses 512-byte data packets
+with cmd byte = end_flag (0 continue / 1 last). See common/protocol.py.
+
+Implemented actions: get_cwd, list_dir, make_dir, create_file, delete_dir,
+delete_file, rename_dir, rename_file, read_file (50000-char whole-file limit,
+line ranges), write_file, edit_file (add/del/modify), copy (file+tree), move,
+exec_cmd (stdout+stderr, timeout, Windows output converted cp936->UTF-8),
+upload, download.
