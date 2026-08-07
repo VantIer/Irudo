@@ -96,8 +96,15 @@ class Handler:
         cmd: int,
         body: bytes,
     ) -> None:
+        if cmd == CMD_HEARTBEAT_ACK:
+            return
+
         if cmd == CMD_HEARTBEAT:
-            ts = body.decode("utf-8", errors="replace").strip() or str(int(time.time()))
+            try:
+                params = decode_tlv(body)
+            except ProtocolError:
+                params = []
+            ts = params[0].strip() if params else str(int(time.time()))
             await self._write_packet(writer, encode_response(req_id, CMD_HEARTBEAT_ACK, ts))
             return
 

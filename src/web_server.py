@@ -6,6 +6,7 @@ Endpoints:
 - ``/api/agents``              - list connected Agents
 - ``/api/agents/switch``       - switch active Agent
 - ``/api/auth``                - get / set auth_mode
+- ``/api/stop``                - interrupt the current conversation loop
 - ``/api/reset``               - reset conversation for active Agent
 - ``/api/history``             - get conversation history for active Agent
 - ``/api/chat-stream``         - SSE chat stream
@@ -82,7 +83,7 @@ class WebApp:
             registry=self._registry,
             host=self._cfg.c2_host,
             port=self._cfg.c2_port,
-            auth_tokens=self._cfg.c2_auth_tokens,
+            auth_token=self._cfg.c2_auth_tokens,
             heartbeat_timeout=self._cfg.heartbeat_timeout_sec,
         )
 
@@ -188,6 +189,11 @@ class WebApp:
             except Exception as e:
                 self._model.submit_web_auth(False, [])
                 return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+        @self._app.post("/api/stop")
+        async def stop_conversation():
+            self._model.stop()
+            return {"success": True}
 
         @self._app.post("/api/exec-cmd")
         async def exec_cmd(command: str = Form(...)):
@@ -328,7 +334,7 @@ class WebApp:
                 return JSONResponse({"error": str(e)}, status_code=503)
 
         @self._app.post("/api/files/upload")
-        async def upload_file(file: UploadFile = File(...), dest: str = Form(...)):
+        async def upload_file(file: UploadFile = File(...), dest: str = Form("")):
             _, err = _active_or_error()
             if err is not None:
                 return err
@@ -338,7 +344,8 @@ class WebApp:
                 with open(tmp_path, "wb") as f:
                     f.write(content)
                 try:
-                    result = await c2_file_transfer.upload(self._registry, str(tmp_path), await _join_cwd_async(dest))
+                    remote_dest = dest or file.filename
+                    result = await c2_file_transfer.upload(self._registry, str(tmp_path), await _join_cwd_async(remote_dest))
                 finally:
                     try:
                         tmp_path.unlink()

@@ -32,7 +32,7 @@ class Config:
 
         self.c2_host: str = "0.0.0.0"
         self.c2_port: int = 8881
-        self.c2_auth_tokens: list = []
+        self.c2_auth_tokens: str = ""
         self.heartbeat_timeout_sec: int = 60
 
         self.heartbeat_interval_sec: int = 30
@@ -56,7 +56,16 @@ class Config:
             self.listen_port = data.get("listen_port", self.listen_port)
             self.c2_host = data.get("c2_host", self.c2_host)
             self.c2_port = data.get("c2_port", self.c2_port)
-            self.c2_auth_tokens = data.get("c2_auth_tokens", self.c2_auth_tokens)
+            token_val = data.get("c2_auth_tokens", self.c2_auth_tokens)
+            if isinstance(token_val, (list, tuple)):
+                if len(token_val) > 1:
+                    raise ValueError(
+                        "config error: 'c2_auth_tokens' must be a single value "
+                        f"(found a list of {len(token_val)}). "
+                        "Configure exactly one shared token."
+                    )
+                token_val = token_val[0] if token_val else ""
+            self.c2_auth_tokens = str(token_val or "")
             self.heartbeat_timeout_sec = data.get("heartbeat_timeout_sec", self.heartbeat_timeout_sec)
             self.heartbeat_interval_sec = data.get("heartbeat_interval_sec", self.heartbeat_interval_sec)
             self.reconnect_initial_sec = data.get("reconnect_initial_sec", self.reconnect_initial_sec)

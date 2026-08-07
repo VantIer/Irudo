@@ -26,6 +26,7 @@ All Bots connect to a common C2 and are controlled by the same user/LLM, much li
 - **多 Agent 支持**：C2 可同时纳管多个远程端，每个 Agent 独立 LLM 会话，切换后历史保留
 - **LLM 驱动命令执行**：AI 输出 JSON 命令 → C2 路由 → 远程端执行 → 结果回灌 LLM 续轮
 - **授权控制**：命令执行前可要求授权（CLI `/y`/`/n` 提示，Web 弹窗），或自动授权
+- **通信加密**：注册认证通过后，全部后续流量使用 **ChaCha20**（RFC 7539）流式加密，密钥为认证 token 的 SHA-256 派生值，双向独立 nonce；零三方依赖（Python 纯实现 + C 自包含实现）
 - **文件操作**：文件读写/编辑/复制/移动/上传下载（512 字节分包 + 结束标记）
 - **远程关机**：下发 `shutdown` 指令关闭远程端进程（非系统关机）
 - **心跳保活**：远程端周期性心跳，C2 watchdog 超时自动剔除失联 Agent
@@ -151,7 +152,7 @@ cp config_remote.example.json config_remote.json  # 填入 C2 地址/agent id/to
 - `api_base` / `api_key` / `model`：LLM API（OpenAI 兼容）
 - `listen_host` / `listen_port`：Web 面板监听（默认 `127.0.0.1:8880`）
 - `c2_host` / `c2_port`：C2 网络监听，供远程端连接（默认 `0.0.0.0:8881`）
-- `c2_auth_tokens`：预共享 token 列表，远程端需匹配
+- `c2_auth_tokens`：预共享 token（**单个字符串值**，仅允许一个），用于挑战-响应注册握手
 - `system_prompt`：提示词（`{system_name}` 占位符由 C2 按激活 Agent 的 OS 动态替换）
 
 **远程端关键项**（`config_remote.json`）：`c2_address`、`agent_id`、`auth_token`。
@@ -212,7 +213,7 @@ python -m remote.main --config base.json --c2-address other:8881
 - 聊天区：与 AI 对话，命令执行结果以终端风格块展示
 - **Command**：直接对当前 Agent 执行 shell 命令
 - **Files**：文件管理器（针对当前 Agent 的远程文件系统）
-- **Controls**：主题切换、授权模式、重置会话、关闭 Agent
+- **Controls**：主题切换、授权模式、停止响应、重置会话、关闭 Agent
 
 ## CLI 命令
 
@@ -235,7 +236,9 @@ python -m remote.main --config base.json --c2-address other:8881
 - 请求包身：TLV 链式 `uint32 length + UTF-8 data`
 - 响应包身：单一 UTF-8 字符串（无 TLV 切分）
 - 文件传输：数据包复用 16B 头，`cmd` 字段换为结束标记（0=续传，1=末包），≤ 512 字节/包
-- 控制指令：`register` / `heartbeat` / `disconnect` / `shutdown`（0x85）
+- 控制指令：`register`（携带随机 nonce）/ `register_response`（返回 `sha256(nonce + c2_auth_tokens)` 挑战）/ `register_confirm` / `heartbeat` / `disconnect` / `shutdown`（0x85）
+- 注册鉴权：token 不明文传输；远程端生成随机字符串 → C2 回传挑战哈希 → 远程端本地校验后确认，C2 才注册；失败即断开
+- 通信加密：认证通过后整个字节流使用 ChaCha20 加密（密钥 = `sha256(auth_token)`；C2→Agent 与 Agent→C2 使用不同 nonce），握手之前的 register / 挑战 / confirm 为明文
 
 详见 `设计文档.md` §3。
 

@@ -57,6 +57,7 @@ CMD_HEARTBEAT = 0x82
 CMD_HEARTBEAT_ACK = 0x83
 CMD_DISCONNECT = 0x84
 CMD_SHUTDOWN = 0x85
+CMD_REGISTER_CONFIRM = 0x86
 
 CONTROL_CMDS = {
     CMD_REGISTER: "register",
@@ -65,6 +66,7 @@ CONTROL_CMDS = {
     CMD_HEARTBEAT_ACK: "heartbeat_ack",
     CMD_DISCONNECT: "disconnect",
     CMD_SHUTDOWN: "shutdown",
+    CMD_REGISTER_CONFIRM: "register_confirm",
 }
 
 ACTION_NAME_TO_CMD = {v[0]: k for k, v in ACTION_CMDS.items()}
@@ -173,3 +175,9 @@ class PacketReader:
         body = bytes(self._buf[PACKET_HEADER_LEN:total])
         del self._buf[:total]
         return req_id, body_len, cmd, body
+
+    def drain_all(self) -> bytes:
+        """Return all buffered bytes and clear the internal buffer."""
+        data = bytes(self._buf)
+        self._buf.clear()
+        return data

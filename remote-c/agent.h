@@ -69,6 +69,7 @@ typedef int sockfd_t;
 #define CMD_HEARTBEAT_ACK     0x83
 #define CMD_DISCONNECT        0x84
 #define CMD_SHUTDOWN          0x85
+#define CMD_REGISTER_CONFIRM  0x86
 
 #define END_FLAG_CONTINUE 0
 #define END_FLAG_LAST     1
@@ -138,6 +139,14 @@ char    *detect_os(void);
 int      get_hostname(char *buf, size_t n);
 int64_t  now_ms(void);
 void     sleep_sec(double s);
+
+/* ---------- self-contained SHA-256 (implemented in protocol.c) ---------- */
+void     sha256_digest(const void *data, size_t len, uint8_t out[32]);
+void     sha256_hex(const void *data, size_t len, char out[65]);
+
+/* ---------- connection-wide ChaCha20 stream encryption (protocol.c) ----- */
+void     crypto_enable_agent(const uint8_t key[32]);
+void     crypto_disable(void);
 
 /* growable string buffer */
 typedef struct {
