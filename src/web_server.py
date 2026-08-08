@@ -212,9 +212,25 @@ class WebApp:
             return agent, None
 
         def _is_remote_abs(path: str) -> bool:
-            return posixpath.isabs(path) or (
+            return posixpath.isabs(path) or bool(
+                re.match(r"^[A-Za-z]:[/\\]?$", path)
+            ) or (
                 len(path) >= 3 and path[1] == ":" and path[2] in "/\\"
             )
+
+        def _norm_remote(path: str) -> str:
+            """Normalize a remote path to forward slashes.
+
+            Handles Windows drive paths correctly: 'C:\\tmp' -> 'C:/tmp',
+            and a bare drive root 'C:' / 'C:/' -> 'C:/' (never a bare 'C:').
+            """
+            p = (path or "").replace("\\", "/")
+            m = re.match(r"^([A-Za-z]):/?$", p)
+            if m:
+                return m.group(1).upper() + ":/"
+            if p in ("", ".", "/"):
+                return p
+            return p.rstrip("/")
 
         async def _ensure_cwd() -> str:
             """Resolve the remote absolute CWD once via get_cwd."""
@@ -222,14 +238,19 @@ class WebApp:
                 result = await self._controller.forwarder.forward(action_to_cmd("get_cwd"), [])
                 if result.startswith("Error:"):
                     raise NetworkError(result)
-                self._cwd = result
+                self._cwd = _norm_remote(result)
             return self._cwd
 
         async def _join_cwd_async(name: str) -> str:
-            cwd = await _ensure_cwd()
+            cwd = _norm_remote(await _ensure_cwd())
             if _is_remote_abs(name) or cwd in (".", ""):
-                return name
-            return posixpath.join(cwd, name)
+                return _norm_remote(name)
+            name = name.replace("\\", "/").lstrip("/")
+            if re.match(r"^[A-Za-z]:/?$", cwd):
+                # cwd is a drive root like "C:/"; join without adding a
+                # second drive prefix.
+                return cwd + name
+            return cwd.rstrip("/") + "/" + name
 
         @self._app.get("/api/files/list")
         async def list_files():
@@ -263,14 +284,20 @@ class WebApp:
         @self._app.post("/api/files/parent")
         async def parent_dir():
             try:
-                base = (await _ensure_cwd()).replace("\\", "/")
-                stripped = base.rstrip("/")
-                if not stripped:
-                    parent = "/" if base.startswith("/") else "."
-                elif re.match(r"^[A-Za-z]:$", stripped):
-                    parent = stripped + "/"
-                else:
-                    parent = posixpath.dirname(stripped) or "."
+                cwd = _norm_remote(await _ensure_cwd())
+                m = re.match(r"^([A-Za-z]):/?$", cwd)
+                if m:
+                    # already at a Windows drive root: stay there
+                    self._cwd = m.group(1).upper() + ":/"
+                    return JSONResponse({"current_path": self._cwd, "error": None})
+                if cwd in ("", ".", "/"):
+                    self._cwd = cwd
+                    return JSONResponse({"current_path": self._cwd, "error": None})
+                parent = posixpath.dirname(cwd) or "."
+                m2 = re.match(r"^([A-Za-z]):$", parent)
+                if m2:
+                    # dirname("C:/tmp") -> "C:"; restore the drive root form
+                    parent = m2.group(1).upper() + ":/"
                 self._cwd = parent
                 return JSONResponse({"current_path": self._cwd, "error": None})
             except NetworkError as e:
@@ -289,7 +316,7 @@ class WebApp:
                     return JSONResponse({"error": "Directory not found"}, status_code=404)
                 if "is a file" in listing:
                     return JSONResponse({"error": "Not a directory"}, status_code=404)
-                self._cwd = target
+                self._cwd = _norm_remote(target)
                 return JSONResponse({"current_path": self._cwd, "error": None})
             except NetworkError as e:
                 return JSONResponse({"error": str(e)}, status_code=503)

