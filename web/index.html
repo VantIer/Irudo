@@ -19,6 +19,9 @@
             --danger: #ef4444;
             --danger-soft: #fee2e2;
             --success: #10b981;
+            --top-btn-red: #fca5a5;
+            --top-btn-green: #86efac;
+            --top-btn-blue: #93c5fd;
             --user-bubble: #eef0ff;
             --ai-bubble: #ffffff;
             --result-bg: #eef1f7;
@@ -43,6 +46,9 @@
             --danger: #f87171;
             --danger-soft: #3a2226;
             --success: #34d399;
+            --top-btn-red: #7f1d1d;
+            --top-btn-green: #14532d;
+            --top-btn-blue: #1e3a8a;
             --user-bubble: #232741;
             --ai-bubble: #1e222b;
             --result-bg: #11141b;
@@ -95,24 +101,6 @@
             box-shadow: 0 4px 12px rgba(99, 102, 241, 0.35);
         }
         .spacer { flex: 1; }
-        .agent-wrap { display: flex; align-items: center; gap: 10px; }
-        .agent-select {
-            appearance: none;
-            -webkit-appearance: none;
-            background: var(--surface-2);
-            border: 1px solid var(--border);
-            color: var(--text);
-            padding: 8px 34px 8px 12px;
-            border-radius: 10px;
-            font-size: 13px;
-            font-weight: 500;
-            min-width: 170px;
-            cursor: pointer;
-            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
-            background-repeat: no-repeat;
-            background-position: right 10px center;
-        }
-        .agent-select:focus { outline: none; border-color: var(--accent); }
         .badge {
             display: inline-flex;
             align-items: center;
@@ -132,6 +120,85 @@
         .badge.success { color: var(--success); background: rgba(16, 185, 129, 0.12); }
         .badge.danger { color: var(--danger); background: var(--danger-soft); }
         .top-actions { display: flex; gap: 8px; }
+        .icon-btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 36px; height: 36px;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            background: var(--surface);
+            color: var(--text);
+            cursor: pointer;
+            transition: all 0.15s;
+            flex-shrink: 0;
+            font-family: inherit;
+        }
+        .icon-btn:hover { background: var(--surface-2); border-color: var(--text-3); }
+        .icon-btn:active { transform: scale(0.95); }
+        .icon-btn svg { width: 18px; height: 18px; }
+
+        /* ---------- Agent sidebar (left) ---------- */
+        .agent-sidebar {
+            position: fixed;
+            top: 60px; left: 0; bottom: 0;
+            width: 260px;
+            background: var(--surface);
+            border-right: 1px solid var(--border);
+            box-shadow: var(--shadow);
+            transform: translateX(-100%);
+            transition: transform 0.28s ease;
+            z-index: 55;
+            display: flex;
+            flex-direction: column;
+            padding: 16px 0;
+        }
+        .agent-sidebar.visible { transform: translateX(0); }
+        .agent-sidebar h3 {
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.6px;
+            color: var(--text-3);
+            margin: 0 16px 10px;
+            font-weight: 600;
+        }
+        .agent-sidebar .agent-list { flex: 1; overflow-y: auto; }
+        .agent-item {
+            padding: 10px 16px;
+            cursor: pointer;
+            border-left: 3px solid transparent;
+            transition: background 0.12s;
+        }
+        .agent-item:hover { background: var(--surface-2); }
+        .agent-item.active {
+            background: var(--accent-soft);
+            border-left-color: var(--accent);
+        }
+        .agent-item .aid { font-weight: 600; font-size: 13.5px; color: var(--text); word-break: break-all; }
+        .agent-item .host { font-size: 12px; color: var(--text-2); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .agent-item .os { font-size: 11px; color: var(--text-3); margin-top: 1px; }
+        .agent-sidebar .agent-empty {
+            padding: 24px 16px;
+            text-align: center;
+            color: var(--text-3);
+            font-size: 13px;
+        }
+        .agent-backdrop {
+            position: fixed;
+            inset: 0;
+            background: rgba(15, 17, 23, 0.4);
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.25s ease;
+            z-index: 49;
+        }
+        .agent-backdrop.show {
+            opacity: 1;
+            pointer-events: auto;
+        }
+        @media (min-width: 720px) {
+            .agent-backdrop { display: none; }
+        }
 
         .btn {
             display: inline-flex;
@@ -170,7 +237,7 @@
             overflow: hidden;
             background: var(--surface);
             border-bottom: 1px solid var(--border);
-            transition: height 0.25s ease;
+            transition: height 0.25s ease, margin-left 0.28s ease;
             flex-shrink: 0;
         }
         .command-panel.visible { height: 64px; }
@@ -193,7 +260,9 @@
         .text-input:focus { outline: none; border-color: var(--accent); }
 
         /* ---------- Main ---------- */
-        .main { flex: 1; display: flex; overflow: hidden; position: relative; }
+        .main { flex: 1; display: flex; overflow: hidden; position: relative; transition: margin-left 0.28s ease; }
+        body.agent-sidebar-open .main { margin-left: 260px; }
+        body.agent-sidebar-open .command-panel { margin-left: 260px; }
         .chat-area { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 
         .chat-scroll {
@@ -463,23 +532,31 @@
 
         @media (max-width: 720px) {
             .top-actions .btn span.lbl { display: none; }
+            .top-actions .btn {
+                width: 52px;
+                height: 28px;
+                padding: 0;
+                border-radius: 999px;
+                border-color: transparent;
+            }
+            #commandToggleBtn { background: var(--top-btn-red); }
+            #filesToggleBtn { background: var(--top-btn-green); }
+            #sidebarToggleBtn { background: var(--top-btn-blue); }
             .chat-inner { padding: 0 14px; }
             .composer { padding: 12px 14px 16px; }
-            .agent-select { min-width: 120px; }
+            body.agent-sidebar-open .main { margin-left: 0; }
+            body.agent-sidebar-open .command-panel { margin-left: 0; }
         }
     </style>
 </head>
 <body>
     <header class="topbar">
+        <button class="icon-btn" id="agentSidebarToggle" title="Toggle agents">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
+        </button>
         <div class="brand">
             <div class="logo">AI</div>
             <span>Command &amp; Control</span>
-        </div>
-        <div class="agent-wrap">
-            <select id="agentSelector" class="agent-select" title="Active Agent">
-                <option value="">No agents</option>
-            </select>
-            <span class="badge" id="activeAgentLabel"><span class="dot"></span>Agent: --</span>
         </div>
         <span class="spacer"></span>
         <div class="top-actions">
@@ -488,6 +565,12 @@
             <button class="btn" id="sidebarToggleBtn"><span class="lbl">Controls</span></button>
         </div>
     </header>
+
+    <aside class="agent-sidebar" id="agentSidebar">
+        <h3>Online Agents</h3>
+        <div class="agent-list" id="agentList"></div>
+    </aside>
+    <div class="agent-backdrop" id="agentSidebarBackdrop"></div>
 
     <div class="command-panel" id="commandPanel">
         <div class="command-panel-inner">
@@ -516,7 +599,7 @@
                 <button class="btn small" id="filesNewBtn">New</button>
                 <button class="btn small" id="filesCopyBtn">Copy</button>
                 <button class="btn small" id="filesMoveBtn">Move</button>
-                <button class="btn small danger" id="filesDeleteBtn">Delete</button>
+                <button class="btn small" id="filesDeleteBtn">Delete</button>
                 <button class="btn small" id="filesUploadBtn">Upload</button>
                 <button class="btn small" id="filesDownloadBtn">Download</button>
                 <input type="file" id="filesUploadInput" style="display:none;">
@@ -656,28 +739,40 @@
             try {
                 const res = await fetch('/api/agents');
                 const data = await res.json();
-                const sel = document.getElementById('agentSelector');
-                const activeLabel = document.getElementById('activeAgentLabel');
-                sel.innerHTML = '';
+                const list = document.getElementById('agentList');
+                list.innerHTML = '';
                 if (!data.agents || data.agents.length === 0) {
-                    const opt = document.createElement('option');
-                    opt.value = '';
-                    opt.textContent = 'No agents connected';
-                    sel.appendChild(opt);
-                    activeLabel.textContent = 'Agent: --';
-                    activeLabel.className = 'badge danger';
+                    const empty = document.createElement('div');
+                    empty.className = 'agent-empty';
+                    empty.textContent = 'No agents online';
+                    list.appendChild(empty);
                     return;
                 }
                 data.agents.forEach(a => {
-                    const opt = document.createElement('option');
-                    opt.value = a.id;
-                    opt.textContent = `${a.id} (${a.os})`;
-                    if (a.id === data.active) opt.selected = true;
-                    sel.appendChild(opt);
+                    const item = document.createElement('div');
+                    item.className = 'agent-item' + (a.id === data.active ? ' active' : '');
+
+                    const idDiv = document.createElement('div');
+                    idDiv.className = 'aid';
+                    idDiv.textContent = a.id;
+
+                    const hostDiv = document.createElement('div');
+                    hostDiv.className = 'host';
+                    hostDiv.textContent = a.hostname;
+
+                    const osDiv = document.createElement('div');
+                    osDiv.className = 'os';
+                    osDiv.textContent = a.os;
+
+                    item.appendChild(idDiv);
+                    item.appendChild(hostDiv);
+                    item.appendChild(osDiv);
+
+                    item.addEventListener('click', async () => {
+                        if (a.id !== data.active) await switchAgent(a.id);
+                    });
+                    list.appendChild(item);
                 });
-                const active = data.agents.find(a => a.id === data.active);
-                activeLabel.textContent = 'Agent: ' + (active ? `${active.id}` : '--');
-                activeLabel.className = 'badge success';
             } catch (e) {
                 console.warn('loadAgents failed', e);
             }
@@ -999,9 +1094,42 @@
             }
         });
 
-        const agentSelector = document.getElementById('agentSelector');
-        agentSelector.addEventListener('change', async () => { await switchAgent(agentSelector.value); });
         setInterval(loadAgents, 5000);
+
+        // ---------------- agent sidebar (left) ----------------
+        let agentSidebarOpen = true;
+        let wasNarrow = window.innerWidth < 720;
+
+        function applyAgentSidebarState() {
+            const sidebar = document.getElementById('agentSidebar');
+            const backdrop = document.getElementById('agentSidebarBackdrop');
+            const narrow = window.innerWidth < 720;
+            sidebar.classList.toggle('visible', agentSidebarOpen);
+            document.body.classList.toggle('agent-sidebar-open', agentSidebarOpen);
+            backdrop.classList.toggle('show', narrow && agentSidebarOpen);
+        }
+
+        document.getElementById('agentSidebarToggle').addEventListener('click', () => {
+            agentSidebarOpen = !agentSidebarOpen;
+            applyAgentSidebarState();
+        });
+
+        document.getElementById('agentSidebarBackdrop').addEventListener('click', () => {
+            agentSidebarOpen = false;
+            applyAgentSidebarState();
+        });
+
+        window.addEventListener('resize', () => {
+            const narrow = window.innerWidth < 720;
+            if (narrow && !wasNarrow) {
+                agentSidebarOpen = false; // auto-collapse when entering narrow
+            } else if (!narrow && wasNarrow) {
+                agentSidebarOpen = true;  // restore default open when entering desktop
+            }
+            wasNarrow = narrow;
+            applyAgentSidebarState();
+        });
+        applyAgentSidebarState();
 
         // ---------------- theme ----------------
         const themeToggle = document.getElementById('themeToggle');

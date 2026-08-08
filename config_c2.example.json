@@ -12,6 +12,6 @@
 
   "c2_host": "0.0.0.0",
   "c2_port": 8881,
-  "c2_auth_tokens": ["token-for-server-01", "token-for-server-02"],
+  "c2_auth_tokens": "token-for-server-01",
   "heartbeat_timeout_sec": 60
 }

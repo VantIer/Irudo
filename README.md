@@ -27,7 +27,7 @@ All Bots connect to a common C2 and are controlled by the same user/LLM, much li
 - **LLM 驱动命令执行**：AI 输出 JSON 命令 → C2 路由 → 远程端执行 → 结果回灌 LLM 续轮
 - **授权控制**：命令执行前可要求授权（CLI `/y`/`/n` 提示，Web 弹窗），或自动授权
 - **通信加密**：注册认证通过后，全部后续流量使用 **ChaCha20**（RFC 7539）流式加密，密钥为认证 token 的 SHA-256 派生值，双向独立 nonce；零三方依赖（Python 纯实现 + C 自包含实现）
-- **文件操作**：文件读写/编辑/复制/移动/上传下载（512 字节分包 + 结束标记）
+- **文件操作**：文件读写/编辑/复制/移动/上传下载（1024 字节分包 + 结束标记）
 - **远程关机**：下发 `shutdown` 指令关闭远程端进程（非系统关机）
 - **心跳保活**：远程端周期性心跳，C2 watchdog 超时自动剔除失联 Agent
 - **CLI 与 Web 双界面**：Web 支持 Agent 切换、文件管理、授权弹窗、深浅主题
@@ -209,11 +209,22 @@ python -m remote.main --config base.json --c2-address other:8881
 
 启动 Web 模式后，浏览器打开 `http://<listen_host>:<listen_port>`：
 
-- 顶部：Agent 下拉切换 + 当前 Agent 状态
+- 顶部左侧：汉堡按钮 + 左侧 Agent 栏（在线 Agent 列表：ID / hostname / OS，点击切换）
 - 聊天区：与 AI 对话，命令执行结果以终端风格块展示
 - **Command**：直接对当前 Agent 执行 shell 命令
 - **Files**：文件管理器（针对当前 Agent 的远程文件系统）
 - **Controls**：主题切换、授权模式、停止响应、重置会话、关闭 Agent
+
+## 界面截图
+
+以下截图均来自 Web 模式界面：
+
+| 截图 | 说明 |
+| --- | --- |
+| ![主界面](screenshots/main.png) | 主界面：聊天区 + 左侧在线 Agent 列表 |
+| ![命令执行](screenshots/shell.png) | **Command**：直接对当前 Agent 执行 shell 命令 |
+| ![文件管理](screenshots/filemanager.png) | **Files**：远程文件管理器 |
+| ![控制面板](screenshots/controls.png) | **Controls**：主题 / 授权 / 会话控制 |
 
 ## CLI 命令
 
@@ -235,9 +246,9 @@ python -m remote.main --config base.json --c2-address other:8881
 - 包头（16B）：`request_id (8B) | body_len (4B) | reserved (3B) | cmd (1B)`
 - 请求包身：TLV 链式 `uint32 length + UTF-8 data`
 - 响应包身：单一 UTF-8 字符串（无 TLV 切分）
-- 文件传输：数据包复用 16B 头，`cmd` 字段换为结束标记（0=续传，1=末包），≤ 512 字节/包
-- 控制指令：`register`（携带随机 nonce）/ `register_response`（返回 `sha256(nonce + c2_auth_tokens)` 挑战）/ `register_confirm` / `heartbeat` / `disconnect` / `shutdown`（0x85）
-- 注册鉴权：token 不明文传输；远程端生成随机字符串 → C2 回传挑战哈希 → 远程端本地校验后确认，C2 才注册；失败即断开
+- 文件传输：数据包复用 16B 头，`cmd` 字段换为结束标记（0=续传，1=末包），≤ 1024 字节/包
+- 控制指令：`register`（仅携带随机 nonce，不含身份信息）/ `register_response`（返回 `sha256(nonce + c2_auth_tokens)` 挑战）/ `register_confirm`（验证通过后携带 agent_id / hostname / os）/ `heartbeat` / `disconnect` / `shutdown`（0x85）
+- 注册鉴权：token 不明文传输，且认证前不泄露身份；远程端生成随机字符串 → C2 回传挑战哈希 → 远程端本地校验后，在确认包中上报 agent_id / hostname / os，C2 才注册；失败即断开
 - 通信加密：认证通过后整个字节流使用 ChaCha20 加密（密钥 = `sha256(auth_token)`；C2→Agent 与 Agent→C2 使用不同 nonce），握手之前的 register / 挑战 / confirm 为明文
 
 详见 `设计文档.md` §3。

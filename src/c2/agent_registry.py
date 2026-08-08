@@ -29,6 +29,7 @@ class AgentInfo:
     auth_token_valid: bool = True
     next_request_id_min: int = 1_000_000
     write_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    active_ops: int = 0
 
     def allocate_request_id(self) -> int:
         rid = self.next_request_id_min

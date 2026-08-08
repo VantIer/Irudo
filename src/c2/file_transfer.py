@@ -3,7 +3,7 @@
 Two async operations over an already-connected Agent:
 
 - ``upload(local_path, dest_path)``: send an upload init packet, then
-  stream the local file in 512-byte data packets, finally waiting for
+  stream the local file in 1024-byte data packets, finally waiting for
   the Agent's result response.
 
 - ``download(src_path)``: send a download init packet; the Agent's data
@@ -53,24 +53,31 @@ async def upload(
     req_id = agent.allocate_request_id()
     fut: asyncio.Future = asyncio.get_running_loop().create_future()
     agent.pending[req_id] = fut
+    agent.active_ops += 1
     try:
+        init_pkt = encode_request(req_id, CMD_UPLOAD, [dest_path])
         async with agent.write_lock:
-            init_pkt = encode_request(req_id, CMD_UPLOAD, [dest_path])
             agent.writer.write(init_pkt)
             await agent.writer.drain()
 
-            with open(src, "rb") as f:
-                while True:
-                    chunk = f.read(DATA_CHUNK_SIZE)
+        with open(src, "rb") as f:
+            while True:
+                chunk = f.read(DATA_CHUNK_SIZE)
+                async with agent.write_lock:
                     if not chunk:
                         agent.writer.write(encode_data_packet(req_id, END_FLAG_LAST, b""))
                         await agent.writer.drain()
-                        break
-                    end_flag = END_FLAG_CONTINUE if len(chunk) == DATA_CHUNK_SIZE else END_FLAG_LAST
-                    agent.writer.write(encode_data_packet(req_id, end_flag, chunk))
-                    await agent.writer.drain()
-                    if end_flag == END_FLAG_LAST:
-                        break
+                        end_flag = END_FLAG_LAST
+                    else:
+                        end_flag = (
+                            END_FLAG_CONTINUE
+                            if len(chunk) == DATA_CHUNK_SIZE
+                            else END_FLAG_LAST
+                        )
+                        agent.writer.write(encode_data_packet(req_id, end_flag, chunk))
+                        await agent.writer.drain()
+                if end_flag == END_FLAG_LAST:
+                    break
 
         return await asyncio.wait_for(fut, timeout=timeout)
     except asyncio.TimeoutError:
@@ -79,6 +86,8 @@ async def upload(
         raise NetworkError(f"upload failed: {e}")
     finally:
         agent.pending.pop(req_id, None)
+        agent.active_ops -= 1
+        registry.touch_heartbeat(agent.id)
 
 
 async def download(
@@ -94,6 +103,7 @@ async def download(
     queue: asyncio.Queue = asyncio.Queue(maxsize=8192)
     agent.data_queues[req_id] = queue
     dest = _local_download_dir() / os.path.basename(src_path)
+    agent.active_ops += 1
     try:
         async with agent.write_lock:
             init_pkt = encode_request(req_id, CMD_DOWNLOAD, [src_path])
@@ -126,3 +136,5 @@ async def download(
         raise NetworkError(f"download failed: {e}")
     finally:
         agent.data_queues.pop(req_id, None)
+        agent.active_ops -= 1
+        registry.touch_heartbeat(agent.id)

@@ -246,23 +246,21 @@ static void gen_nonce(char *out, size_t outsz) {
 }
 
 /* Challenge-response registration handshake.
- * 1. Send register carrying a random nonce (no plaintext token).
+ * 1. Send register carrying ONLY a random nonce (no agent id / hostname / os
+ *    yet, so identity is not leaked before authentication).
  * 2. Receive register_response = sha256(nonce + c2_auth_tokens).
  * 3. Verify the hash locally; on mismatch return -1 (disconnect).
- * 4. On success send register_confirm. Returns 0 on success, -1 on failure. */
+ * 4. On success send register_confirm now carrying the identity fields
+ *    (agent_id, hostname, os). Returns 0 on success, -1 on failure. */
 static int auth_handshake(sockfd_t sock, const opts *o, bytebuf_t *inbuf) {
     char nonce[40];
     gen_nonce(nonce, sizeof nonce);
 
-    char hostbuf[256];
-    if (get_hostname(hostbuf, sizeof hostbuf) != 0) strcpy(hostbuf, "unknown");
-    char *os = detect_os();
-    const char *params[4] = { o->agent_id, nonce, hostbuf, os };
+    const char *params[1] = { nonce };
     uint32_t plen = 0;
-    uint8_t *pkt = build_request(1, CMD_REGISTER, params, 4, &plen);
+    uint8_t *pkt = build_request(1, CMD_REGISTER, params, 1, &plen);
     int rc = pkt ? send_all(sock, pkt, plen) : -1;
     free(pkt);
-    free(os);
     if (rc != 0) return -1;
 
     uint64_t req_id;
@@ -297,12 +295,16 @@ static int auth_handshake(sockfd_t sock, const opts *o, bytebuf_t *inbuf) {
         return -1;
     }
 
-    const char *cparams[1] = { o->agent_id };
+    char hostbuf[256];
+    if (get_hostname(hostbuf, sizeof hostbuf) != 0) strcpy(hostbuf, "unknown");
+    char *os = detect_os();
+    const char *cparams[3] = { o->agent_id, hostbuf, os };
     uint32_t plen2 = 0;
-    pkt = build_request(2, CMD_REGISTER_CONFIRM, cparams, 1, &plen2);
-    if (!pkt) return -1;
+    pkt = build_request(2, CMD_REGISTER_CONFIRM, cparams, 3, &plen2);
+    if (!pkt) { free(os); return -1; }
     rc = send_all(sock, pkt, plen2);
     free(pkt);
+    free(os);
     return rc;
 }
 

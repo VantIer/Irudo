@@ -9,6 +9,7 @@ import asyncio
 from typing import Optional, Tuple
 
 from common.protocol import (
+    CONTROL_CMDS,
     DATA_CHUNK_SIZE,
     END_FLAG_CONTINUE,
     END_FLAG_LAST,
@@ -35,14 +36,19 @@ async def read_one_packet(
     while True:
         pkt = pr.next_packet()
         if pkt is not None:
-            req_id, body_len, end_flag, body = pkt
+            req_id, body_len, cmd_or_flag, body = pkt
             if len(body) != body_len:
                 raise FileTransferError(
                     f"packet body length mismatch: header={body_len}, got={len(body)}"
                 )
-            if end_flag not in (END_FLAG_CONTINUE, END_FLAG_LAST):
-                raise FileTransferError(f"invalid end_flag: {end_flag}")
-            return end_flag, body
+            if cmd_or_flag in CONTROL_CMDS:
+                # Control packet (e.g. heartbeat_ack) interleaved during a
+                # transfer: skip it and keep waiting for data packets instead
+                # of treating it as an upload data packet.
+                continue
+            if cmd_or_flag not in (END_FLAG_CONTINUE, END_FLAG_LAST):
+                raise FileTransferError(f"invalid end_flag: {cmd_or_flag}")
+            return cmd_or_flag, body
         try:
             chunk = await asyncio.wait_for(reader.read(4096), timeout=timeout)
         except asyncio.TimeoutError:

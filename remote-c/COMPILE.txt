@@ -67,7 +67,7 @@ file / shell operations are driven by the C2 over the protocol.
 
 Header 16 bytes: request_id (uint64 LE) | body_len (uint32 LE) | reserved (3)
 | cmd/flag (1). Request bodies are TLV chains (uint32 LE length + UTF-8 data).
-Responses are single UTF-8 strings. File transfer uses 512-byte data packets
+Responses are single UTF-8 strings. File transfer uses 1024-byte data packets
 with cmd byte = end_flag (0 continue / 1 last). See common/protocol.py.
 
 Implemented actions: get_cwd, list_dir, make_dir, create_file, delete_dir,

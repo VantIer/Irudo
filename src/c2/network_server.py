@@ -1,9 +1,11 @@
 """C2 TCP server accepting connections from remote Agents.
 
 For each connection:
-1. Read the first packet - must be a ``register`` control packet.
-2. Validate ``auth_token`` against the configured whitelist.
-3. Add the Agent to AgentRegistry; send ``register_response``.
+1. Read the first packet - must be a ``register`` control packet that
+   carries ONLY a random nonce (no identity before authentication).
+2. Reply with ``register_response`` = ``sha256(nonce + auth_token)``.
+3. Wait for ``register_confirm`` which now carries the Agent identity
+   (agent_id, hostname, os); only then add the Agent to AgentRegistry.
 4. Start a per-connection reader task that dispatches packets to:
    - heartbeat / disconnect handlers
    - pending Future resolution for action / upload / download responses
@@ -13,7 +15,7 @@ import asyncio
 import hashlib
 import logging
 import time
-from typing import Optional
+from typing import Optional, Tuple
 
 from src.c2.agent_registry import AgentInfo, AgentRegistry
 from common.crypto import NONCE_AGENT_TO_C2, NONCE_C2_TO_AGENT, ChaCha20, EncryptedStream, derive_key
@@ -89,13 +91,21 @@ class NetworkServer:
             self._server = None
 
     async def _watchdog_loop(self) -> None:
-        """Periodically drop Agents whose last heartbeat is stale."""
+        """Periodically drop Agents whose last heartbeat is stale.
+
+        Agents with an active operation (``info.active_ops > 0``, e.g. a file
+        transfer or an in-flight command) are skipped: heartbeats may be
+        suppressed while streaming large files or running long commands, so a
+        busy agent must not be disconnected for a heartbeat gap.
+        """
         interval = max(5, self._heartbeat_timeout // 2)
         try:
             while True:
                 await asyncio.sleep(interval)
                 now = time.time()
                 for info in list(self._registry.list_all()):
+                    if info.active_ops > 0:
+                        continue
                     if now - info.last_heartbeat > self._heartbeat_timeout:
                         logger.warning(f"agent {info.id} heartbeat timeout, closing")
                         try:
@@ -135,17 +145,19 @@ class NetworkServer:
     ) -> Optional[AgentInfo]:
         """Challenge-response registration handshake.
 
-        1. Agent sends ``register`` carrying a random nonce (no plaintext token).
+        1. Agent sends ``register`` carrying ONLY a random nonce
+           (no agent id / hostname / os yet, to avoid leaking identity
+           before authentication).
         2. C2 replies with ``register_response`` whose body is
            ``sha256(nonce + c2_auth_tokens)``.
         3. Agent verifies the hash locally; on success it replies with
-           ``register_confirm``.
+           ``register_confirm`` now carrying the identity fields
+           (agent_id, hostname, os).
         4. C2 registers the Agent only after receiving ``register_confirm``.
         """
-        register_info = await self._read_register(reader, pr)
-        if register_info is None:
+        nonce = await self._read_register(reader, pr)
+        if nonce is None:
             return None
-        agent_id, nonce, hostname, os_name = register_info
 
         if not self._auth_token:
             logger.warning("c2_auth_tokens is not configured; refusing registration")
@@ -158,8 +170,10 @@ class NetworkServer:
         except Exception:
             return None
 
-        if not await self._wait_confirm(reader, pr, agent_id):
+        confirm_info = await self._wait_confirm(reader, pr)
+        if confirm_info is None:
             return None
+        agent_id, hostname, os_name = confirm_info
 
         # Handshake + auth succeeded: switch the whole byte stream to
         # ChaCha20 encryption keyed by sha256(c2_auth_tokens).
@@ -184,7 +198,8 @@ class NetworkServer:
         self,
         reader: asyncio.StreamReader,
         pr: PacketReader,
-    ):
+    ) -> Optional[str]:
+        """Read the first packet - must be ``register`` carrying only the nonce."""
         while True:
             pkt = pr.next_packet()
             if pkt is not None:
@@ -196,14 +211,14 @@ class NetworkServer:
                     params = decode_tlv(body)
                 except ProtocolError:
                     return None
-                if len(params) < 4:
-                    logger.warning("register missing fields")
+                if not params:
+                    logger.warning("register missing nonce")
                     return None
-                agent_id, nonce, hostname, os_name = params[:4]
-                if not agent_id or not nonce:
-                    logger.warning("register missing agent_id/nonce")
+                nonce = params[0]
+                if not nonce:
+                    logger.warning("register missing nonce")
                     return None
-                return agent_id, nonce, hostname, os_name
+                return nonce
             try:
                 chunk = await asyncio.wait_for(reader.read(4096), timeout=30)
             except asyncio.TimeoutError:
@@ -217,9 +232,13 @@ class NetworkServer:
         self,
         reader: asyncio.StreamReader,
         pr: PacketReader,
-        agent_id: str,
         timeout: float = 30.0,
-    ) -> bool:
+    ) -> Optional[Tuple[str, str, str]]:
+        """Wait for ``register_confirm``; returns ``(agent_id, hostname, os)``.
+
+        The confirm packet (sent only after the Agent verified the challenge)
+        carries the identity fields that were deferred from ``register``.
+        """
         deadline = time.time() + timeout
         while time.time() < deadline:
             pkt = pr.next_packet()
@@ -230,23 +249,23 @@ class NetworkServer:
                         params = decode_tlv(body)
                     except ProtocolError:
                         params = []
-                    if params and params[0] != agent_id:
-                        logger.warning(f"register_confirm agent mismatch for {agent_id}")
-                        return False
-                    return True
+                    if len(params) < 3 or not params[0]:
+                        logger.warning("register_confirm missing identity fields")
+                        return None
+                    return params[0], params[1], params[2]
                 logger.warning(f"unexpected packet during handshake: cmd={cmd:#x}")
-                return False
+                return None
             remaining = deadline - time.time()
             if remaining <= 0:
-                return False
+                return None
             try:
                 chunk = await asyncio.wait_for(reader.read(4096), timeout=remaining)
             except asyncio.TimeoutError:
-                return False
+                return None
             if not chunk:
-                return False
+                return None
             pr.feed(chunk)
-        return False
+        return None
 
     async def _serve_connection(
         self,

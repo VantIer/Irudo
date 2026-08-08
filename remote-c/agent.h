@@ -40,7 +40,7 @@ typedef int sockfd_t;
 #endif
 
 #define PACKET_HEADER_LEN 16
-#define DATA_CHUNK_SIZE   512
+#define DATA_CHUNK_SIZE   1024
 #define PROTO_MAX_PATH    4096
 #define READ_FILE_LIMIT   50000
 

