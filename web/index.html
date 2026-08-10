@@ -381,6 +381,9 @@
             background: linear-gradient(transparent, var(--surface-2)); pointer-events: none;
         }
         .collapsible-content.expanded::after { display: none; }
+        .msg.result .collapsible-content::after {
+            background: linear-gradient(transparent, var(--result-bg));
+        }
         .collapsible-toggle { display: none; margin-top: 6px; }
         .collapsible-toggle.show { display: inline-flex; }
 
@@ -563,6 +566,34 @@
         .radio-group label { display: flex; align-items: center; gap: 6px; font-size: 14px; cursor: pointer; }
         .radio-group input { cursor: pointer; }
 
+        /* ---------- Toast ---------- */
+        .toast {
+            position: fixed;
+            top: 76px;
+            left: 50%;
+            transform: translateX(-50%) translateY(-8px);
+            background: var(--surface);
+            color: var(--text);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 10px 18px;
+            font-size: 13px;
+            font-weight: 500;
+            box-shadow: var(--shadow);
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.2s ease, transform 0.2s ease;
+            z-index: 2000;
+        }
+        .toast.show {
+            opacity: 1;
+            transform: translateX(-50%) translateY(0);
+        }
+        .toast.error {
+            border-color: rgba(239, 68, 68, 0.4);
+            color: var(--danger);
+        }
+
         ::-webkit-scrollbar { width: 9px; height: 9px; }
         ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 6px; }
         ::-webkit-scrollbar-thumb:hover { background: var(--text-3); }
@@ -712,9 +743,21 @@
         </div>
     </div>
 
+    <div class="toast" id="toast"></div>
+
     <script>
         let pendingCommand = null;
         let conversationActive = false;
+
+        let toastTimer = null;
+        function showToast(message, isError = false) {
+            const toast = document.getElementById('toast');
+            toast.textContent = message;
+            toast.classList.toggle('error', isError);
+            toast.classList.add('show');
+            clearTimeout(toastTimer);
+            toastTimer = setTimeout(() => toast.classList.remove('show'), 3000);
+        }
 
         const chatBox = document.getElementById('chatBox');
         const chatScroll = document.getElementById('chatScroll');
@@ -916,7 +959,7 @@
                 div.appendChild(span);
             }
 
-            if (type === 'system' && displayText.length > 500) {
+            if ((type === 'system' || type === 'result') && displayText.length > 500) {
                 const wrapper = document.createElement('div');
                 const inner = document.createElement('div');
                 inner.className = 'collapsible-content';
@@ -1387,8 +1430,13 @@
             formData.append('dest', (base && !base.startsWith('Error')) ? base + '/' + file.name : file.name);
             const res = await fetch('/api/files/upload', { method: 'POST', body: formData });
             const data = await res.json();
-            if (data.error) alert('Error: ' + data.error);
-            else await loadFilesList();
+            if (data.error) {
+                alert('Error: ' + data.error);
+            } else {
+                addMessage(data.result, 'system');
+                showToast('Uploaded: ' + file.name);
+                await loadFilesList();
+            }
             filesUploadInput.value = '';
         });
 
@@ -1398,8 +1446,12 @@
             try {
                 const res = await fetch('/api/files/download?src=' + encodeURIComponent(path));
                 const data = await res.json();
-                if (data.error) alert('Error: ' + data.error);
-                else addMessage(data.result, 'system');
+                if (data.error) {
+                    alert('Error: ' + data.error);
+                } else {
+                    addMessage(data.result, 'system');
+                    showToast('Downloaded: ' + selectedFile.name);
+                }
             } catch (err) {
                 alert('Error: ' + err.message);
             }
