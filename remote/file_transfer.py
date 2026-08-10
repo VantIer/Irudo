@@ -10,13 +10,9 @@ from typing import Optional, Tuple
 
 from common.protocol import (
     CONTROL_CMDS,
-    DATA_CHUNK_SIZE,
     END_FLAG_CONTINUE,
     END_FLAG_LAST,
     PacketReader,
-    ProtocolError,
-    decode_header,
-    encode_data_packet,
 )
 
 
@@ -56,9 +52,3 @@ async def read_one_packet(
         if not chunk:
             return None
         pr.feed(chunk)
-
-
-def write_data_packet(writer: asyncio.StreamWriter, req_id: int, end_flag: int, data: bytes) -> None:
-    if len(data) > DATA_CHUNK_SIZE:
-        raise FileTransferError(f"chunk too large: {len(data)}")
-    writer.write(encode_data_packet(req_id, end_flag, data))

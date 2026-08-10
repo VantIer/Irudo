@@ -5,7 +5,6 @@ remote-specific fields are simply ignored if not present (or vice versa).
 """
 
 import json
-import os
 import sys
 from pathlib import Path
 

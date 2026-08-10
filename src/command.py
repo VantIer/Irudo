@@ -8,8 +8,7 @@ Local execution is no longer done here - all action commands are
 forwarded to the active Agent via Forwarder.
 """
 
-import re
-from typing import List, Tuple
+from typing import List
 
 from common.protocol import ACTION_CMDS, ACTION_NAME_TO_CMD
 
@@ -27,14 +26,6 @@ def check_safety(cmd: str) -> bool:
 
 def action_to_cmd(action: str) -> int:
     return ACTION_NAME_TO_CMD.get(action, -1)
-
-
-def action_params(action: str) -> List[str]:
-    """Return ordered parameter names for an action, or [] if unknown."""
-    cmd_code = ACTION_NAME_TO_CMD.get(action)
-    if cmd_code is None:
-        return []
-    return ACTION_CMDS[cmd_code][1]
 
 
 def params_for_action(action: str, cmd_dict: dict) -> List[str]:

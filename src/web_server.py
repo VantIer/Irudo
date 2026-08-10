@@ -78,7 +78,7 @@ class WebApp:
         self._cfg = Config(config_path)
         self._registry = AgentRegistry()
         self._controller = Controller(self._cfg, self._registry)
-        self._model = ModelModule(self._controller, mode="web")
+        self._model = ModelModule(self._controller)
         self._network_server = NetworkServer(
             registry=self._registry,
             host=self._cfg.c2_host,

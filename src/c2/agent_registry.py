@@ -12,6 +12,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional
 
+from common.crypto import EncryptedStream
 from common.protocol import END_FLAG_LAST
 
 
@@ -22,7 +23,7 @@ class AgentInfo:
     os: str
     connected_at: float
     last_heartbeat: float
-    writer: asyncio.StreamWriter
+    writer: EncryptedStream
     conversation_history: List[dict] = field(default_factory=list)
     pending: Dict[int, asyncio.Future] = field(default_factory=dict)
     data_queues: Dict[int, asyncio.Queue] = field(default_factory=dict)
@@ -66,6 +67,19 @@ class AgentRegistry:
             except Exception:
                 pass
 
+    def _fail_pending(self, info: AgentInfo) -> None:
+        """Fail all in-flight requests and unblock data consumers of an Agent."""
+        for fut in info.pending.values():
+            if not fut.done():
+                fut.set_exception(ConnectionError("Agent disconnected"))
+        info.pending.clear()
+        for q in info.data_queues.values():
+            try:
+                q.put_nowait((END_FLAG_LAST, b""))
+            except (asyncio.QueueFull, Exception):
+                pass
+        info.data_queues.clear()
+
     async def register(self, info: AgentInfo) -> None:
         async with self._lock:
             existing = self._agents.get(info.id)
@@ -74,6 +88,7 @@ class AgentRegistry:
                     existing.writer.close()
                 except Exception:
                     pass
+                self._fail_pending(existing)
             self._agents[info.id] = info
             if self._active_id is None:
                 self._active_id = info.id
@@ -85,16 +100,7 @@ class AgentRegistry:
             if self._active_id == agent_id:
                 self._active_id = next(iter(self._agents), None)
         if info is not None:
-            for fut in info.pending.values():
-                if not fut.done():
-                    fut.set_exception(ConnectionError("Agent disconnected"))
-            info.pending.clear()
-            for q in info.data_queues.values():
-                try:
-                    q.put_nowait((END_FLAG_LAST, b""))
-                except (asyncio.QueueFull, Exception):
-                    pass
-            info.data_queues.clear()
+            self._fail_pending(info)
             self._notify("unregistered", info)
 
     def get(self, agent_id: str) -> Optional[AgentInfo]:

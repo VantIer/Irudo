@@ -19,6 +19,7 @@
             --danger: #ef4444;
             --danger-soft: #fee2e2;
             --success: #10b981;
+            --warning: #f59e0b;
             --top-btn-red: #fca5a5;
             --top-btn-green: #86efac;
             --top-btn-blue: #93c5fd;
@@ -46,6 +47,7 @@
             --danger: #f87171;
             --danger-soft: #3a2226;
             --success: #34d399;
+            --warning: #fbbf24;
             --top-btn-red: #7f1d1d;
             --top-btn-green: #14532d;
             --top-btn-blue: #1e3a8a;
@@ -219,6 +221,8 @@
         }
         .btn:hover { background: var(--surface-2); border-color: var(--text-3); }
         .btn:active { transform: scale(0.97); }
+        .btn svg { width: 16px; height: 16px; flex-shrink: 0; }
+        .btn.small svg { width: 14px; height: 14px; }
         .btn.primary {
             background: linear-gradient(135deg, var(--accent), var(--accent-2));
             border: none; color: #fff;
@@ -243,10 +247,43 @@
         .command-panel.visible { height: 64px; }
         .command-panel-inner {
             display: flex;
-            align-items: center;
+            align-items: stretch;
             gap: 10px;
             padding: 12px 20px;
         }
+        .command-input-wrap {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: var(--surface-2);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 0 12px;
+            transition: border-color 0.18s ease, box-shadow 0.18s ease;
+        }
+        .command-input-wrap:focus-within {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px var(--accent-soft);
+        }
+        .command-input-wrap svg {
+            width: 15px;
+            height: 15px;
+            color: var(--text-3);
+            flex-shrink: 0;
+        }
+        .command-input-wrap input {
+            flex: 1;
+            min-width: 0;
+            padding: 10px 0;
+            border: none;
+            background: transparent;
+            color: var(--text);
+            font-size: 14px;
+            font-family: inherit;
+        }
+        .command-input-wrap input:focus { outline: none; }
+        .command-input-wrap input::placeholder { color: var(--text-3); }
         .text-input {
             flex: 1;
             padding: 10px 14px;
@@ -451,7 +488,8 @@
         .file-row:last-child { border-bottom: none; }
         .file-row:hover { background: var(--surface-2); }
         .file-row.selected { background: var(--accent-soft); }
-        .file-icon { font-size: 17px; width: 24px; text-align: center; }
+        .file-icon { font-size: 17px; width: 24px; text-align: center; display: inline-flex; align-items: center; justify-content: center; }
+        .file-icon svg { width: 20px; height: 20px; }
         .file-name { flex: 1; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .file-size { font-size: 12px; color: var(--text-3); }
         .files-empty { padding: 40px; text-align: center; color: var(--text-3); font-size: 13px; }
@@ -552,7 +590,7 @@
 <body>
     <header class="topbar">
         <button class="icon-btn" id="agentSidebarToggle" title="Toggle agents">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg>
         </button>
         <div class="brand">
             <div class="logo">AI</div>
@@ -560,9 +598,9 @@
         </div>
         <span class="spacer"></span>
         <div class="top-actions">
-            <button class="btn" id="commandToggleBtn"><span class="lbl">Command</span></button>
-            <button class="btn" id="filesToggleBtn"><span class="lbl">Files</span></button>
-            <button class="btn" id="sidebarToggleBtn"><span class="lbl">Controls</span></button>
+            <button class="btn" id="commandToggleBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M7 8h6"/><path d="M7 12h4"/><path d="M7 16h8"/></svg><span class="lbl">Command</span></button>
+            <button class="btn" id="filesToggleBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg><span class="lbl">Files</span></button>
+            <button class="btn" id="sidebarToggleBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="6" x2="20" y2="6"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="18" x2="20" y2="18"/></svg><span class="lbl">Controls</span></button>
         </div>
     </header>
 
@@ -574,7 +612,10 @@
 
     <div class="command-panel" id="commandPanel">
         <div class="command-panel-inner">
-            <input type="text" class="text-input" id="commandInput" placeholder="Run a shell command on the active agent..." autocomplete="off">
+            <div class="command-input-wrap">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 17l6-5-6-5"/><path d="M12 19h8"/></svg>
+                <input type="text" id="commandInput" placeholder="Run a shell command on the active agent..." autocomplete="off">
+            </div>
             <button class="btn primary" id="commandExecuteBtn">Execute</button>
         </div>
     </div>
@@ -594,26 +635,26 @@
 
         <div class="files-panel" id="filesPanel">
             <div class="files-toolbar">
-                <button class="btn small" id="filesRefreshBtn">Refresh</button>
-                <button class="btn small" id="filesParentBtn">Parent</button>
-                <button class="btn small" id="filesNewBtn">New</button>
-                <button class="btn small" id="filesCopyBtn">Copy</button>
-                <button class="btn small" id="filesMoveBtn">Move</button>
-                <button class="btn small" id="filesDeleteBtn">Delete</button>
-                <button class="btn small" id="filesUploadBtn">Upload</button>
-                <button class="btn small" id="filesDownloadBtn">Download</button>
+                <button class="btn small" id="filesRefreshBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>Refresh</button>
+                <button class="btn small" id="filesParentBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/></svg>Parent</button>
+                <button class="btn small" id="filesNewBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>New</button>
+                <button class="btn small" id="filesCopyBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>Copy</button>
+                <button class="btn small" id="filesMoveBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><line x1="20" y1="4" x2="8.12" y2="15.88"/><line x1="14.47" y1="14.48" x2="20" y2="20"/><line x1="8.12" y1="8.12" x2="12" y2="12"/></svg>Move</button>
+                <button class="btn small" id="filesDeleteBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>Delete</button>
+                <button class="btn small" id="filesUploadBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M17 8l-5-5-5 5"/><path d="M12 3v12"/></svg>Upload</button>
+                <button class="btn small" id="filesDownloadBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>Download</button>
                 <input type="file" id="filesUploadInput" style="display:none;">
             </div>
             <div class="files-path-row">
                 <input type="text" class="text-input" id="filesPathInput" placeholder="Current remote path..." autocomplete="off">
-                <button class="btn small" id="filesAccessBtn">Go</button>
+                <button class="btn small" id="filesAccessBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5l7 7-7 7"/></svg>Go</button>
             </div>
             <div class="files-list" id="filesList"></div>
         </div>
 
         <aside class="drawer" id="sidebar">
             <h3>Appearance</h3>
-            <button class="btn" id="themeToggle">Switch to Dark Mode</button>
+            <button class="btn" id="themeToggle"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><path d="M12 1v2"/><path d="M12 21v2"/><path d="M4.22 4.22l1.42 1.42"/><path d="M18.36 18.36l1.42 1.42"/><path d="M1 12h2"/><path d="M21 12h2"/><path d="M4.22 19.78l1.42-1.42"/><path d="M18.36 5.64l1.42-1.42"/></svg><span class="lbl">Switch to Dark Mode</span></button>
 
             <div class="divider"></div>
             <h3>Authorization</h3>
@@ -621,12 +662,12 @@
                 <span class="status-dot" id="authDot"></span>
                 <span id="authStatus">Authorization Required</span>
             </div>
-            <button class="btn" id="authToggle">Enable Auto Auth</button>
+            <button class="btn" id="authToggle"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg><span class="lbl">Enable Auto Auth</span></button>
 
             <div class="divider"></div>
             <h3>Session</h3>
-            <button class="btn" id="resetBtn">Reset Conversation</button>
-            <button class="btn danger" id="shutdownBtn">Shutdown Agent</button>
+            <button class="btn" id="resetBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>Reset Conversation</button>
+            <button class="btn danger" id="shutdownBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>Shutdown Agent</button>
         </aside>
     </div>
 
@@ -684,6 +725,7 @@
         const authDot = document.getElementById('authDot');
         const authStatus = document.getElementById('authStatus');
         const authToggle = document.getElementById('authToggle');
+        const authToggleText = authToggle.querySelector('.lbl');
         const resetBtn = document.getElementById('resetBtn');
         const sidebar = document.getElementById('sidebar');
         const filesPanel = document.getElementById('filesPanel');
@@ -691,6 +733,10 @@
 
         const SEND_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>';
         const STOP_ICON = '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"></rect></svg>';
+        const FILE_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>';
+        const DIR_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>';
+        const SUN_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><path d="M12 1v2"/><path d="M12 21v2"/><path d="M4.22 4.22l1.42 1.42"/><path d="M18.36 18.36l1.42 1.42"/><path d="M1 12h2"/><path d="M21 12h2"/><path d="M4.22 19.78l1.42-1.42"/><path d="M18.36 5.64l1.42-1.42"/></svg>';
+        const MOON_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>';
 
         function setSendButtonIdle() {
             sendBtn.disabled = false;
@@ -830,11 +876,11 @@
             if (isAuto) {
                 authDot.classList.add('authorized');
                 authStatus.textContent = 'Auto Authorized';
-                authToggle.textContent = 'Require Authorization';
+                authToggleText.textContent = 'Require Authorization';
             } else {
                 authDot.classList.remove('authorized');
                 authStatus.textContent = 'Authorization Required';
-                authToggle.textContent = 'Enable Auto Auth';
+                authToggleText.textContent = 'Enable Auto Auth';
             }
         }
 
@@ -905,6 +951,16 @@
             }
         }
 
+        function createAiMessageBlock() {
+            const div = document.createElement('div');
+            div.className = 'msg ai';
+            const span = document.createElement('span');
+            span.textContent = '';
+            div.appendChild(span);
+            chatBox.appendChild(div);
+            return span;
+        }
+
         async function sendMessage() {
             const msg = messageInput.value.trim();
             if (!msg || conversationActive) return;
@@ -915,12 +971,7 @@
             messageInput.value = '';
             messageInput.style.height = 'auto';
 
-            const aiMsgDiv = document.createElement('div');
-            aiMsgDiv.className = 'msg ai';
-            const aiSpan = document.createElement('span');
-            aiSpan.textContent = '';
-            aiMsgDiv.appendChild(aiSpan);
-            chatBox.appendChild(aiMsgDiv);
+            let aiSpan = createAiMessageBlock();
 
             pendingCommand = null;
 
@@ -945,7 +996,7 @@
                             switch (data.type) {
                                 case 'answering':
                                     setTyping(`AI is thinking... (Round ${data.iteration})`, true);
-                                    if (data.iteration > 1) aiSpan.textContent += '\n\n';
+                                    if (data.iteration > 1) aiSpan = createAiMessageBlock();
                                     break;
                                 case 'chunk':
                                     aiSpan.textContent += data.content;
@@ -1133,13 +1184,17 @@
 
         // ---------------- theme ----------------
         const themeToggle = document.getElementById('themeToggle');
+        const themeToggleIcon = themeToggle.querySelector('svg');
+        const themeToggleText = themeToggle.querySelector('.lbl');
         function setTheme(dark) {
             if (dark) {
                 document.body.setAttribute('data-theme', 'dark');
-                themeToggle.textContent = 'Switch to Light Mode';
+                themeToggleIcon.innerHTML = MOON_ICON;
+                themeToggleText.textContent = 'Switch to Light Mode';
             } else {
                 document.body.removeAttribute('data-theme');
-                themeToggle.textContent = 'Switch to Dark Mode';
+                themeToggleIcon.innerHTML = SUN_ICON;
+                themeToggleText.textContent = 'Switch to Dark Mode';
             }
             localStorage.setItem('theme', dark ? 'dark' : 'light');
         }
@@ -1233,8 +1288,9 @@
                     div.className = 'file-row';
                     div.dataset.name = item.name;
                     div.dataset.isDir = item.is_dir;
+                    const iconColor = item.is_dir ? 'var(--warning)' : 'var(--text-3)';
                     div.innerHTML = `
-                        <span class="file-icon">${item.is_dir ? '📁' : '📄'}</span>
+                        <span class="file-icon" style="color: ${iconColor};">${item.is_dir ? DIR_ICON : FILE_ICON}</span>
                         <span class="file-name"></span>
                         <span class="file-size">${item.is_dir ? '' : formatSize(item.size)}</span>
                     `;
@@ -1336,10 +1392,17 @@
             filesUploadInput.value = '';
         });
 
-        document.getElementById('filesDownloadBtn').addEventListener('click', () => {
+        document.getElementById('filesDownloadBtn').addEventListener('click', async () => {
             if (!selectedFile || selectedFile.is_dir) { alert('Please select a file to download.'); return; }
             const path = filesPathInput.value + '/' + selectedFile.name;
-            window.open('/api/files/download?src=' + encodeURIComponent(path), '_blank');
+            try {
+                const res = await fetch('/api/files/download?src=' + encodeURIComponent(path));
+                const data = await res.json();
+                if (data.error) alert('Error: ' + data.error);
+                else addMessage(data.result, 'system');
+            } catch (err) {
+                alert('Error: ' + err.message);
+            }
         });
 
         filesModalCancel.addEventListener('click', () => filesModal.classList.remove('show'));

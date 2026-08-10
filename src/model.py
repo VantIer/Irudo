@@ -15,7 +15,7 @@ SSE endpoint.
 import asyncio
 import threading
 import time
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 from src.c2.forwarder import NetworkError
 from src.command import action_to_cmd, check_safety, params_for_action
@@ -37,15 +37,16 @@ class AuthResult:
 
 
 class ModelModule:
-    def __init__(self, controller: Controller, mode: str = "cli"):
+    def __init__(self, controller: Controller):
         self._controller = controller
-        self._mode = mode
         config = controller.get_config()
         self._llm = LLMClient(config.api_base, config.api_key)
         self._web_auth_event: Optional[threading.Event] = None
         self._web_auth_result: Optional[AuthResult] = None
         self._stop_lock = threading.Lock()
         self._stop_requested = False
+        self._active_stream_lock = threading.Lock()
+        self._active_stream = None
 
     def _prompt_auth(self, command: dict) -> AuthResult:
         """Sync CLI prompt; called from a worker thread so input() is safe."""
@@ -75,7 +76,7 @@ class ModelModule:
                 self._controller.set_auth_mode(0)
                 return AuthResult(False, command)
 
-    def _llm_call_sync(self, messages: list) -> str:
+    def _llm_call_sync(self, messages: list, stream_to_stdout: bool = True) -> str:
         """Run the (sync, streaming) LLM call and return the full text."""
         stream = self._llm.chat(
             messages=messages,
@@ -87,8 +88,10 @@ class ModelModule:
             if chunk.choices and chunk.choices[0].delta.content:
                 content = chunk.choices[0].delta.content
                 full += content
-                print(content, end="", flush=True)
-        print()
+                if stream_to_stdout:
+                    print(content, end="", flush=True)
+        if stream_to_stdout:
+            print()
         return full
 
     async def _llm_stream_async(self, messages: list):
@@ -102,20 +105,30 @@ class ModelModule:
         queue: asyncio.Queue = asyncio.Queue()
 
         def _producer():
+            stream = None
             try:
                 stream = self._llm.chat(
                     messages=messages,
                     model=self._controller.get_config().model,
                     stream=True,
                 )
+                self._set_active_stream(stream)
                 for chunk in stream:
                     if self._is_stop_requested():
                         break
                     if chunk.choices and chunk.choices[0].delta.content:
                         loop.call_soon_threadsafe(queue.put_nowait, chunk.choices[0].delta.content)
-                loop.call_soon_threadsafe(queue.put_nowait, None)
             except Exception as e:
-                loop.call_soon_threadsafe(queue.put_nowait, e)
+                if not self._is_stop_requested():
+                    loop.call_soon_threadsafe(queue.put_nowait, e)
+            finally:
+                self._set_active_stream(None)
+                if stream is not None:
+                    try:
+                        stream.close()
+                    except Exception:
+                        pass
+                loop.call_soon_threadsafe(queue.put_nowait, None)
 
         task = asyncio.create_task(asyncio.to_thread(_producer))
         try:
@@ -127,6 +140,7 @@ class ModelModule:
                     raise item
                 yield item
         finally:
+            self._close_active_stream()
             if not task.done():
                 task.cancel()
                 try:
@@ -157,18 +171,7 @@ class ModelModule:
             messages.extend(history)
 
             try:
-                if stream_to_stdout:
-                    full_response = await asyncio.to_thread(self._llm_call_sync, messages)
-                else:
-                    stream = self._llm.chat(
-                        messages=messages,
-                        model=self._controller.get_config().model,
-                        stream=True,
-                    )
-                    full_response = ""
-                    for chunk in stream:
-                        if chunk.choices and chunk.choices[0].delta.content:
-                            full_response += chunk.choices[0].delta.content
+                full_response = await asyncio.to_thread(self._llm_call_sync, messages, stream_to_stdout)
 
                 if full_response:
                     history.append({"role": "assistant", "content": full_response})
@@ -296,7 +299,6 @@ class ModelModule:
                     continue
 
                 all_results = []
-                user_denied = False
                 for cmd in commands:
                     if self._is_stop_requested():
                         stopped = True
@@ -320,8 +322,10 @@ class ModelModule:
                             break
                         if not authorized:
                             yield {"type": "auth_denied", "message": "User denied command execution"}
-                            user_denied = True
-                            break
+                            result_str = "Error: User denied command execution"
+                            all_results.append({"action": action, "params": params_dict, "result": result_str})
+                            yield {"type": "execution_done", "results": all_results[-1:]}
+                            continue
 
                     yield {"type": "executing", "commands": [cmd]}
                     cmd_code = action_to_cmd(action)
@@ -339,10 +343,6 @@ class ModelModule:
                     yield {"type": "execution_done", "results": all_results[-1:]}
 
                 if stopped:
-                    break
-
-                if user_denied:
-                    history.append({"role": "user", "content": "User denied command execution"})
                     break
 
                 result_text = "\n".join(self._format_result(r) for r in all_results)
@@ -395,6 +395,7 @@ class ModelModule:
     def stop(self):
         """Request interruption of the current conversation loop."""
         self._set_stop(True)
+        self._close_active_stream()
 
     def _is_stop_requested(self) -> bool:
         with self._stop_lock:
@@ -403,6 +404,22 @@ class ModelModule:
     def _set_stop(self, requested: bool):
         with self._stop_lock:
             self._stop_requested = requested
+
+    def _set_active_stream(self, stream) -> None:
+        with self._active_stream_lock:
+            self._active_stream = stream
+
+    def _get_active_stream(self):
+        with self._active_stream_lock:
+            return self._active_stream
+
+    def _close_active_stream(self) -> None:
+        stream = self._get_active_stream()
+        if stream is not None:
+            try:
+                stream.close()
+            except Exception:
+                pass
 
     @staticmethod
     def _format_result(ex: dict) -> str:
@@ -424,7 +441,3 @@ class ModelModule:
         if agent is None:
             return []
         return agent.conversation_history
-
-    def get_all_histories(self) -> Dict[str, list]:
-        return {info.id: list(info.conversation_history)
-                for info in self._controller.registry.list_all()}

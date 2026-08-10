@@ -53,7 +53,7 @@ async def cli_main(config_path: str):
         auth_token=cfg.c2_auth_tokens,
         heartbeat_timeout=cfg.heartbeat_timeout_sec,
     )
-    model = ModelModule(controller, mode="cli")
+    model = ModelModule(controller)
 
     server_task = asyncio.create_task(server.serve_forever())
     await asyncio.sleep(0.2)

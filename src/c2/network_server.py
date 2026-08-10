@@ -298,7 +298,7 @@ class NetworkServer:
                     return
                 pr.feed(chunk)
         finally:
-            if self._registry.get(info.id) is not None:
+            if self._registry.get(info.id) is info:
                 await self._registry.unregister(info.id)
 
     async def _dispatch_packet(
