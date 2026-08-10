@@ -1,0 +1,30 @@
+remote/file_transfer.py
+  h_f63364b2177cf7 54
+src/c2/agent_registry.py
+  h_f63364b2177cf7 15,26,70-82,91,103
+src/c2/network_server.py
+  h_f63364b2177cf7 301
+src/command.py
+  h_f63364b2177cf7 11
+src/main.py
+  h_f63364b2177cf7 56
+src/model.py
+  h_f63364b2177cf7 18,40,48-49,79,91-94,108,115,122-131,143,174,325-328,398,408-423,443
+src/web_server.py
+  h_f63364b2177cf7 81
+web/index.html
+  h_f63364b2177cf7 22,50,224-225,250,254-286,491-492,593,601-603,615-618,638-645,650,657,665,669-670,728,736-739,879,883,954-963,974,999,1187-1188,1192-1193,1196-1197,1291,1293,1395,1398-1405
+设计文档.md
+  h_f63364b2177cf7 181,408,731
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.20",
+  "base_commit_sha": "ec8257edcc0eefd6a3ff6611dbff6b7aad566e48",
+  "prompts": {},
+  "humans": {
+    "h_f63364b2177cf7": {
+      "author": "VantIer <vantler@live.cn>"
+    }
+  }
+}
