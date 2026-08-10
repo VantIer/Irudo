@@ -242,6 +242,7 @@ static void gen_nonce(char *out, size_t outsz) {
         out[i * 2] = hexc[buf[i] >> 4];
         out[i * 2 + 1] = hexc[buf[i] & 0xf];
     }
+    if (16 * 2 < (int)outsz) out[32] = 0;
     out[outsz - 1] = 0;
 }
 
