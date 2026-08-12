@@ -1,0 +1,14 @@
+web/index.html
+  h_f63364b2177cf7 875-879,897,1349-1354
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "6659dc26776149b5bcf941db9a7819bc44503b92",
+  "prompts": {},
+  "humans": {
+    "h_f63364b2177cf7": {
+      "author": "VantIer <vantler@live.cn>"
+    }
+  }
+}
