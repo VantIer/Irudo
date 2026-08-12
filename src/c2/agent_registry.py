@@ -97,11 +97,15 @@ class AgentRegistry:
     async def unregister(self, agent_id: str) -> None:
         async with self._lock:
             info = self._agents.pop(agent_id, None)
+            active_changed = False
             if self._active_id == agent_id:
                 self._active_id = next(iter(self._agents), None)
+                active_changed = True
         if info is not None:
             self._fail_pending(info)
             self._notify("unregistered", info)
+            if active_changed:
+                self._notify("active_changed", self.get(self._active_id))
 
     def get(self, agent_id: str) -> Optional[AgentInfo]:
         return self._agents.get(agent_id)

@@ -94,8 +94,15 @@ class WebApp:
 
         self._app = FastAPI()
         self._cwd = None  # resolved lazily via remote get_cwd
+        self._registry.add_listener(self._on_agent_event)
         self._register_routes()
         self._register_lifespan()
+
+    def _on_agent_event(self, event: str, info) -> None:
+        """Reset the per-Agent cwd cache when the active Agent changes
+        (e.g. the active Agent disconnects and another becomes active)."""
+        if event == "active_changed":
+            self._cwd = None
 
     def _register_lifespan(self):
         @self._app.on_event("startup")
@@ -121,6 +128,7 @@ class WebApp:
                 "model": cfg.model,
                 "auth_mode": self._controller.get_auth_mode(),
                 "active_agent": self._registry.active_id,
+                "conversation_active": self._model.conversation_active(),
             }
 
         @self._app.get("/api/agents")
@@ -170,10 +178,21 @@ class WebApp:
             return {"history": self._model.get_history()}
 
         @self._app.post("/api/chat-stream")
-        async def chat_stream(message: str = Form(...)):
+        async def chat_stream(message: str = Form("")):
+            # Start the conversation as a background task BEFORE returning the
+            # SSE response, so it survives the client refreshing the page.
+            err = None
+            if message:
+                err = self._model.begin_chat(message)
+
             async def event_generator():
-                async for event in self._model.chat_stream(message):
+                if err:
+                    yield f"data: {json.dumps({'type': 'error', 'error': err})}\n\n"
+                    yield f"data: {json.dumps({'type': 'done', 'iteration': 0})}\n\n"
+                    return
+                async for event in self._model.chat_stream(message or None):
                     yield f"data: {json.dumps(event)}\n\n"
+
             return StreamingResponse(event_generator(), media_type="text/event-stream")
 
         @self._app.post("/api/authorize-execute")

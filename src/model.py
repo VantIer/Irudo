@@ -47,6 +47,17 @@ class ModelModule:
         self._stop_requested = False
         self._active_stream_lock = threading.Lock()
         self._active_stream = None
+        # Background conversation task, decoupled from the SSE client so a
+        # page refresh / client disconnect does not abort the conversation.
+        self._conv_task: Optional[asyncio.Task] = None
+        self._conv_state: dict = {
+            "iteration": 0,
+            "phase": "idle",   # idle | llm | exec | auth_wait | done
+            "text": "",
+            "results": [],
+            "pending_command": None,
+        }
+        self._subscribers: set = set()
 
     def _prompt_auth(self, command: dict) -> AuthResult:
         """Sync CLI prompt; called from a worker thread so input() is safe."""
@@ -239,121 +250,241 @@ class ModelModule:
         return ChatResult(response=last_response)
 
     # ----------------------------------------------------------------
-    # Web SSE streaming (yields events instead of returning ChatResult)
+    # Web SSE: background conversation + attach/reconnect
     # ----------------------------------------------------------------
-    async def chat_stream(self, message: str):
-        self._set_stop(False)
+    def conversation_active(self) -> bool:
+        task = self._conv_task
+        return task is not None and not task.done()
+
+    def begin_chat(self, message: str) -> Optional[str]:
+        """Start a conversation in the background (survives page refresh).
+
+        Returns an error string if the conversation cannot be started,
+        otherwise None. The conversation keeps running even if every SSE
+        client disconnects; callers re-attach via ``chat_stream()``.
+        """
         agent = self._controller.registry.get_active()
         if agent is None:
-            yield {"type": "error", "error": "No active agent. Use /target <id>."}
-            return
-        history = agent.conversation_history
-        history.append({"role": "user", "content": message})
+            return "No active agent. Use /target <id>."
+        if self.conversation_active():
+            return "A conversation is already in progress. Please wait for it to finish or press Stop."
+        self._set_stop(False)
+        self._conv_state = {
+            "iteration": 0,
+            "phase": "idle",
+            "text": "",
+            "results": [],
+            "pending_command": None,
+        }
+        self._conv_task = asyncio.get_running_loop().create_task(
+            self._run_conversation(message)
+        )
+        return None
 
-        max_iterations = self._controller.get_config().round_limit
+    def _subscribe(self) -> asyncio.Queue:
+        q: asyncio.Queue = asyncio.Queue(maxsize=500)
+        self._subscribers.add(q)
+        return q
+
+    def _unsubscribe(self, q) -> None:
+        self._subscribers.discard(q)
+
+    def _push_event(self, ev: dict) -> None:
+        for q in list(self._subscribers):
+            if q.full():
+                try:
+                    q.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+            try:
+                q.put_nowait(ev)
+            except asyncio.QueueFull:
+                pass
+
+    async def chat_stream(self, message: Optional[str] = None):
+        """Async generator feeding the Web SSE stream.
+
+        Attaches to the (possibly already running) background conversation:
+        first a snapshot of the in-progress state is replayed so a freshly
+        refreshed page can pick up where it left off, then live events are
+        forwarded until the conversation finishes. ``message`` is accepted
+        for backwards compatibility but conversations are started by
+        ``begin_chat()``.
+        """
+        if message and not self.conversation_active():
+            err = self.begin_chat(message)
+            if err:
+                yield {"type": "error", "error": err}
+                return
+        if not self.conversation_active():
+            yield {"type": "done", "iteration": 0}
+            return
+
+        q = self._subscribe()
+        try:
+            st = dict(self._conv_state)
+            if st.get("phase") == "done":
+                yield {"type": "done", "iteration": st.get("iteration", 0)}
+                return
+            if st.get("phase") == "llm" and st.get("text"):
+                yield {"type": "answering", "iteration": st.get("iteration", 1)}
+                yield {"type": "chunk", "content": st["text"]}
+            elif st.get("phase") == "auth_wait" and st.get("pending_command"):
+                yield {"type": "auth_required", "commands": [st["pending_command"]]}
+                yield {"type": "waiting_auth", "iteration": st.get("iteration", 1)}
+            elif st.get("phase") == "exec" and st.get("results"):
+                yield {"type": "executing", "commands": []}
+                yield {"type": "execution_done", "results": st["results"]}
+
+            while True:
+                try:
+                    ev = await asyncio.wait_for(q.get(), timeout=25)
+                except asyncio.TimeoutError:
+                    yield {"type": "ping"}
+                    continue
+                yield ev
+                if ev.get("type") == "done":
+                    return
+        finally:
+            self._unsubscribe(q)
+
+    async def _run_conversation(self, message: str) -> None:
+        """Background conversation loop. Pushes events to subscribers instead
+        of yielding, so it survives the SSE client disconnecting."""
+        self._set_stop(False)
         iteration = 0
         stopped = False
+        try:
+            agent = self._controller.registry.get_active()
+            if agent is None:
+                self._push_event({"type": "error", "error": "No active agent. Use /target <id>."})
+                return
+            history = agent.conversation_history
+            history.append({"role": "user", "content": message})
 
-        while iteration < max_iterations:
-            if self._is_stop_requested():
-                stopped = True
-                break
-            iteration += 1
-            yield {"type": "answering", "iteration": iteration}
+            max_iterations = self._controller.get_config().round_limit
 
-            messages = [
-                {"role": "system", "content": self._controller.render_system_prompt()}
-            ]
-            messages.extend(history)
-
-            full_response = ""
-            commands: List = []
-
-            try:
-                async for content in self._llm_stream_async(messages):
-                    full_response += content
-                    yield {"type": "chunk", "content": content}
-
-                history.append({"role": "assistant", "content": full_response})
-                last_response = full_response
-
+            while iteration < max_iterations:
                 if self._is_stop_requested():
                     stopped = True
                     break
+                iteration += 1
+                self._conv_state.update({
+                    "iteration": iteration,
+                    "phase": "llm",
+                    "text": "",
+                    "pending_command": None,
+                })
+                self._push_event({"type": "answering", "iteration": iteration})
 
-                parsed_commands, parse_errors = CommandParser.parse(full_response)
-                if parse_errors:
-                    yield {"type": "parse_error", "errors": parse_errors}
-                    history.append({
-                        "role": "user",
-                        "content": f"JSON parse error occurred. Please fix the JSON format and resend:\n{parse_errors}",
-                    })
-                    continue
+                messages = [
+                    {"role": "system", "content": self._controller.render_system_prompt()}
+                ]
+                messages.extend(history)
 
-                commands = parsed_commands
-                yield {"type": "response_done", "iteration": iteration, "commands": commands}
+                full_response = ""
+                commands: List = []
 
-                if not commands:
-                    if not parse_errors:
-                        break
-                    continue
+                try:
+                    async for content in self._llm_stream_async(messages):
+                        full_response += content
+                        self._conv_state["text"] = full_response
+                        self._push_event({"type": "chunk", "content": content})
 
-                all_results = []
-                for cmd in commands:
+                    history.append({"role": "assistant", "content": full_response})
+                    self._conv_state["text"] = ""
+
                     if self._is_stop_requested():
                         stopped = True
                         break
 
-                    action = cmd.get("action")
-                    params_dict = {k: v for k, v in cmd.items() if k != "action"}
-
-                    if action == "exec_cmd" and not check_safety(params_dict.get("command", "")):
-                        result_str = "Error: Command blocked due to safety concerns"
-                        all_results.append({"action": action, "params": params_dict, "result": result_str})
-                        yield {"type": "execution_done", "results": all_results[-1:]}
+                    parsed_commands, parse_errors = CommandParser.parse(full_response)
+                    if parse_errors:
+                        self._push_event({"type": "parse_error", "errors": parse_errors})
+                        history.append({
+                            "role": "user",
+                            "content": f"JSON parse error occurred. Please fix the JSON format and resend:\n{parse_errors}",
+                        })
                         continue
 
-                    if self._controller.get_auth_mode() == 0:
-                        yield {"type": "auth_required", "commands": [cmd]}
-                        yield {"type": "waiting_auth", "iteration": iteration}
-                        authorized = await self._await_web_auth()
+                    commands = parsed_commands
+                    self._push_event({"type": "response_done", "iteration": iteration, "commands": commands})
+
+                    if not commands:
+                        if not parse_errors:
+                            break
+                        continue
+
+                    all_results = []
+                    self._conv_state.update({"phase": "exec", "results": []})
+                    for cmd in commands:
                         if self._is_stop_requested():
                             stopped = True
                             break
-                        if not authorized:
-                            yield {"type": "auth_denied", "message": "User denied command execution"}
-                            result_str = "Error: User denied command execution"
+
+                        action = cmd.get("action")
+                        params_dict = {k: v for k, v in cmd.items() if k != "action"}
+
+                        if action == "exec_cmd" and not check_safety(params_dict.get("command", "")):
+                            result_str = "Error: Command blocked due to safety concerns"
                             all_results.append({"action": action, "params": params_dict, "result": result_str})
-                            yield {"type": "execution_done", "results": all_results[-1:]}
+                            self._conv_state["results"] = list(all_results)
+                            self._push_event({"type": "execution_done", "results": all_results[-1:]})
                             continue
 
-                    yield {"type": "executing", "commands": [cmd]}
-                    cmd_code = action_to_cmd(action)
-                    if cmd_code < 0:
-                        result_str = f"Error: Unknown action: {action}"
-                    else:
-                        params = params_for_action(action, params_dict)
-                        try:
-                            result_str = await self._controller.forwarder.forward(cmd_code, params)
-                        except NetworkError as e:
-                            yield {"type": "error", "error": str(e)}
-                            history.append({"role": "user", "content": f"[Network Error] {e}"})
-                            return
-                    all_results.append({"action": action, "params": params_dict, "result": result_str})
-                    yield {"type": "execution_done", "results": all_results[-1:]}
+                        if self._controller.get_auth_mode() == 0:
+                            self._conv_state.update({"phase": "auth_wait", "pending_command": cmd})
+                            self._push_event({"type": "auth_required", "commands": [cmd]})
+                            self._push_event({"type": "waiting_auth", "iteration": iteration})
+                            authorized = await self._await_web_auth()
+                            self._conv_state["pending_command"] = None
+                            self._conv_state["phase"] = "exec"
+                            if self._is_stop_requested():
+                                stopped = True
+                                break
+                            if not authorized:
+                                self._push_event({"type": "auth_denied", "message": "User denied command execution"})
+                                result_str = "Error: User denied command execution"
+                                all_results.append({"action": action, "params": params_dict, "result": result_str})
+                                self._conv_state["results"] = list(all_results)
+                                self._push_event({"type": "execution_done", "results": all_results[-1:]})
+                                continue
 
-                if stopped:
+                        self._push_event({"type": "executing", "commands": [cmd]})
+                        cmd_code = action_to_cmd(action)
+                        if cmd_code < 0:
+                            result_str = f"Error: Unknown action: {action}"
+                        else:
+                            params = params_for_action(action, params_dict)
+                            try:
+                                result_str = await self._controller.forwarder.forward(cmd_code, params)
+                            except NetworkError as e:
+                                self._push_event({"type": "error", "error": str(e)})
+                                history.append({"role": "user", "content": f"[Network Error] {e}"})
+                                return
+                        all_results.append({"action": action, "params": params_dict, "result": result_str})
+                        self._conv_state["results"] = list(all_results)
+                        self._push_event({"type": "execution_done", "results": all_results[-1:]})
+
+                    if stopped:
+                        break
+
+                    result_text = "\n".join(self._format_result(r) for r in all_results)
+                    history.append({"role": "user", "content": f"Command execution result:\n{result_text}"})
+                except Exception as e:
+                    self._push_event({"type": "error", "error": str(e)})
                     break
-
-                result_text = "\n".join(self._format_result(r) for r in all_results)
-                history.append({"role": "user", "content": f"Command execution result:\n{result_text}"})
-            except Exception as e:
-                yield {"type": "error", "error": str(e)}
-                break
-
-        if stopped:
-            yield {"type": "stopped", "iteration": iteration}
-        yield {"type": "done", "iteration": iteration}
+        except Exception as e:
+            try:
+                self._push_event({"type": "error", "error": str(e)})
+            except Exception:
+                pass
+        finally:
+            self._conv_state["phase"] = "done"
+            if stopped:
+                self._push_event({"type": "stopped", "iteration": iteration})
+            self._push_event({"type": "done", "iteration": iteration})
+            self._conv_task = None
 
     async def _await_web_auth(self) -> bool:
         """Wait for the web client to call /api/authorize-execute.
