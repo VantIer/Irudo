@@ -872,8 +872,11 @@
                     });
                     list.appendChild(item);
                 });
-                if (activeChanged && !conversationActive) {
-                    await loadHistory();
+                if (activeChanged) {
+                    if (!conversationActive) {
+                        await loadHistory();
+                    }
+                    await refreshFilesIfOpen();
                 }
             } catch (e) {
                 console.warn('loadAgents failed', e);
@@ -891,6 +894,7 @@
                 lastActiveId = agentId;
                 await loadAgents();
                 await loadHistory();
+                await refreshFilesIfOpen();
             } else {
                 addMessage('Switch failed: ' + (data.error || 'unknown'), 'system');
             }
@@ -1342,6 +1346,12 @@
         });
 
         // ---------------- file manager ----------------
+        function refreshFilesIfOpen() {
+            if (filesPanel.classList.contains('visible')) {
+                return loadFilesList();
+            }
+        }
+
         const filesList = document.getElementById('filesList');
         const filesPathInput = document.getElementById('filesPathInput');
         const filesModal = document.getElementById('filesModal');
