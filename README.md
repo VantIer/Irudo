@@ -27,10 +27,13 @@ All Bots connect to a common C2 and are controlled by the same user/LLM, much li
 - **LLM 驱动命令执行**：AI 输出 JSON 命令 → C2 路由 → 远程端执行 → 结果回灌 LLM 续轮
 - **授权控制**：命令执行前可要求授权（CLI `/y`/`/n` 提示，Web 弹窗），或自动授权
 - **通信加密**：注册认证通过后，全部流量（含身份确认包）使用 **ChaCha20**（RFC 7539）流式加密，密钥为认证 token 的 SHA-256 派生值，双向独立 nonce；零三方依赖（Python 纯实现 + C 自包含实现）
-- **文件操作**：文件读写/编辑/复制/移动/上传下载（1024 字节分包 + 结束标记）
+- **文件操作**：文件读写/编辑/复制/移动/上传下载（1024 字节分包 + 结束标记，流式读写）
+- **会话韧性**：Web 对话作为后台任务运行，**页面刷新/断连不会中断对话**，刷新后自动重连会话流；Agent 掉线时自动切换激活 Agent，并同步聊天历史与文件管理器视图
+- **指令串行锁**：每个 Agent 持有独立指令锁，命令与文件传输在同一 Agent 内严格串行、互不交错；不同 Agent 的会话可并发独立执行
+- **Web 文件传输**：上传字节先流式缓冲到 `ul_temp_dir`（uuid 唯一名，传输结束即删除），再传输至 Agent；下载先落盘 `dl_temp_dir` 再回传操作者浏览器（临时文件保留，重名覆盖）
 - **远程关机**：下发 `shutdown` 指令关闭远程端进程（非系统关机）
-- **心跳保活**：远程端周期性心跳，C2 watchdog 超时自动剔除失联 Agent
-- **CLI 与 Web 双界面**：Web 支持 Agent 切换、文件管理、授权弹窗、深浅主题
+- **心跳保活**：远程端周期性心跳，C2 watchdog 超时自动剔除失联 Agent（`active_ops` 保护执行中的 Agent 不被误踢）
+- **CLI 与 Web 双界面**：Web 支持 Agent 切换、文件管理、授权弹窗、深浅主题、直连命令
 - **多语言远程端**：除 Python 远程端（`remote/`）外，提供零三方依赖的 **C 版远程端**（`remote-c/`），win/linux 下 gcc 直接编译、参数与 Python 版一致
 - **一键打包**：`build/` 提供 C2 / 远程端独立的 bat/sh 编译脚本，产出单文件可执行程序
 
@@ -73,15 +76,15 @@ XXX/
 │   └── protocol.py
 ├── src/                       # C2 端
 │   ├── c2/
-│   │   ├── agent_registry.py  # Agent 状态 + per-Agent 历史
-│   │   ├── network_server.py  # TCP 监听 + 鉴权 + 心跳 watchdog
-│   │   ├── forwarder.py       # 指令转发 + 控制包
-│   │   └── file_transfer.py   # 上传/下载
+│   │   ├── agent_registry.py  # Agent 状态 + per-Agent 历史 + 指令锁
+│   │   ├── network_server.py  # TCP 监听 + 鉴权 + 心跳 watchdog + 下载数据路由
+│   │   ├── forwarder.py       # 指令转发 + 控制包（每 Agent 指令锁串行）
+│   │   └── file_transfer.py   # 上传/下载（流式、临时目录、错误标记）
 │   ├── llm.py                 # LLM 调用 + JSON 命令解析
 │   ├── command.py             # 动作路由 + 安全检查
 │   ├── controller.py
-│   ├── config.py
-│   ├── model.py               # 多轮对话 + per-Agent 历史
+│   ├── config.py              # 配置 + dl/ul 临时目录解析
+│   ├── model.py               # per-Agent 会话（后台任务 + SSE 重连）
 │   ├── main.py                # C2 入口（CLI/Web）
 │   └── web_server.py          # C2 Web（FastAPI + NetworkServer 共存）
 ├── remote/                    # 远程端（Python，独立包）
@@ -153,7 +156,9 @@ cp config_remote.example.json config_remote.json  # 填入 C2 地址/agent id/to
 - `listen_host` / `listen_port`：Web 面板监听（默认 `127.0.0.1:8880`）
 - `c2_host` / `c2_port`：C2 网络监听，供远程端连接（默认 `0.0.0.0:8881`）
 - `c2_auth_tokens`：预共享 token（**单个字符串值**，仅允许一个），用于挑战-响应注册握手
+- `heartbeat_timeout_sec`：C2 心跳 watchdog 超时（默认 60）
 - `system_prompt`：提示词（`{system_name}` 占位符由 C2 按激活 Agent 的 OS 动态替换）
+- `dl_temp_dir` / `ul_temp_dir`：下载 / 上传的临时目录。为空时：下载使用 C2 程序工作目录下的 `downloads/`（自动创建），上传使用系统默认临时目录；指定后自动创建
 
 **远程端关键项**（`config_remote.json`）：`c2_address`、`agent_id`、`auth_token`。
 
@@ -210,10 +215,12 @@ python -m remote.main --config base.json --c2-address other:8881
 启动 Web 模式后，浏览器打开 `http://<listen_host>:<listen_port>`：
 
 - 顶部左侧：汉堡按钮 + 左侧 Agent 栏（在线 Agent 列表：ID / hostname / OS，点击切换）
-- 聊天区：与 AI 对话，命令执行结果以终端风格块展示
+- 聊天区：与 AI 对话，命令执行结果以终端风格块展示；**刷新页面不会中断对话**（后台任务继续，刷新后自动重连），Agent 掉线自动切换到其他在线 Agent 并同步聊天历史
 - **Command**：直接对当前 Agent 执行 shell 命令
-- **Files**：文件管理器（针对当前 Agent 的远程文件系统）
+- **Files**：文件管理器（针对当前 Agent 的远程文件系统；切换 Agent 时文件列表自动跟随刷新）。上传先缓冲到 `ul_temp_dir` 再传输；下载先落 `dl_temp_dir` 再回传浏览器（临时文件保留）
 - **Controls**：主题切换、授权模式、停止响应、重置会话、关闭 Agent
+
+> 长命令注意：`cmd_timeout` 到期会终止指令并使当前会话结束。若要在远程端启动常驻后台程序，请让 LLM 使用带输出重定向的独立运行方式（Linux `nohup cmd > log 2>&1 &` / Windows `start "" /b cmd > log 2>&1`），以便 `exec_cmd` 立即返回。
 
 ## 界面截图
 
@@ -234,8 +241,8 @@ python -m remote.main --config base.json --c2-address other:8881
 | `/target <agent_id>`       | 切换当前激活 Agent（同时切换 LLM 会话）         |
 | `/y-all` / `/n-all`        | 自动授权 / 每次询问                             |
 | `/reset`                   | 重置当前 Agent 的会话历史                      |
-| `/upload <local> <dest>`   | 上传本地文件至当前 Agent                       |
-| `/download <src>`          | 从当前 Agent 下载文件，保存到程序目录          |
+| `/upload <local> <dest>`   | 上传本地文件至当前 Agent（CLI 直读本地路径，不经临时目录） |
+| `/download <src>`          | 从当前 Agent 下载文件，保存到 `dl_temp_dir`               |
 | `/shutdown`                | 关闭当前 Agent（断开连接并退出进程）           |
 | `/help` / `/quit`          | 帮助 / 退出                                      |
 

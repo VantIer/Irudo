@@ -1510,13 +1510,23 @@
             const path = filesPathInput.value + '/' + selectedFile.name;
             try {
                 const res = await fetch('/api/files/download?src=' + encodeURIComponent(path));
-                const data = await res.json();
-                if (data.error) {
-                    alert('Error: ' + data.error);
-                } else {
-                    addMessage(data.result, 'system');
-                    showToast('Downloaded: ' + selectedFile.name);
+                const ct = res.headers.get('content-type') || '';
+                if (ct.includes('application/json')) {
+                    const data = await res.json();
+                    if (data.error) alert('Error: ' + data.error);
+                    return;
                 }
+                const blob = await res.blob();
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = selectedFile.name;
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                URL.revokeObjectURL(url);
+                addMessage(`Downloaded: ${selectedFile.name}`, 'system');
+                showToast('Downloaded: ' + selectedFile.name);
             } catch (err) {
                 alert('Error: ' + err.message);
             }

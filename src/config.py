@@ -5,7 +5,9 @@ remote-specific fields are simply ignored if not present (or vice versa).
 """
 
 import json
+import os
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -38,6 +40,12 @@ class Config:
         self.reconnect_initial_sec: float = 1.0
         self.reconnect_max_sec: float = 60.0
 
+        # Temp dirs for web file transfer. Empty means:
+        #   dl_temp_dir -> <C2 working dir>/downloads (auto-created)
+        #   ul_temp_dir -> the environment default temp directory
+        self.dl_temp_dir: str = ""
+        self.ul_temp_dir: str = ""
+
         self.load()
 
     def load(self):
@@ -69,3 +77,29 @@ class Config:
             self.heartbeat_interval_sec = data.get("heartbeat_interval_sec", self.heartbeat_interval_sec)
             self.reconnect_initial_sec = data.get("reconnect_initial_sec", self.reconnect_initial_sec)
             self.reconnect_max_sec = data.get("reconnect_max_sec", self.reconnect_max_sec)
+            self.dl_temp_dir = str(data.get("dl_temp_dir", self.dl_temp_dir) or "")
+            self.ul_temp_dir = str(data.get("ul_temp_dir", self.ul_temp_dir) or "")
+
+    def get_dl_dir(self) -> Path:
+        """Download staging directory (files land here after a download)."""
+        if self.dl_temp_dir.strip():
+            p = Path(self.dl_temp_dir).expanduser()
+        else:
+            p = Path(os.getcwd()) / "downloads"
+        try:
+            p.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
+        return p
+
+    def get_ul_dir(self) -> Path:
+        """Upload staging directory (web-uploaded bytes are buffered here)."""
+        if self.ul_temp_dir.strip():
+            p = Path(self.ul_temp_dir).expanduser()
+        else:
+            p = Path(tempfile.gettempdir())
+        try:
+            p.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
+        return p

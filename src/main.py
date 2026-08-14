@@ -147,8 +147,10 @@ async def cli_main(config_path: str):
                     print("Usage: /download <src_path>")
                     continue
                 try:
-                    result = await file_transfer.download(registry, parts[1])
-                    print(result)
+                    result = await file_transfer.download(
+                        registry, parts[1], download_dir=cfg.get_dl_dir()
+                    )
+                    print(f"Saved to: {result}")
                 except NetworkError as e:
                     print(f"Error: {e}")
                 continue

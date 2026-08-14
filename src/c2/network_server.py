@@ -27,6 +27,8 @@ from common.protocol import (
     CMD_REGISTER,
     CMD_REGISTER_CONFIRM,
     CMD_REGISTER_RESPONSE,
+    END_FLAG_CONTINUE,
+    END_FLAG_LAST,
     PacketReader,
     ProtocolError,
     decode_tlv,
@@ -339,12 +341,21 @@ class NetworkServer:
 
         if req_id in info.data_queues:
             q = info.data_queues[req_id]
-            end_flag = cmd
+            if cmd in (END_FLAG_CONTINUE, END_FLAG_LAST):
+                end_flag = cmd
+                try:
+                    # Async put with backpressure: never silently drop data packets.
+                    await asyncio.wait_for(q.put((end_flag, body)), timeout=15)
+                except (asyncio.TimeoutError, asyncio.QueueFull):
+                    logger.warning(f"drop download data pkt req_id={req_id} (consumer gone?)")
+                return
+            # A response to a transfer init (usually an error string) instead
+            # of data packets: deliver it as an error marker so the transfer
+            # consumer can surface it instead of writing garbage into a file.
             try:
-                # Async put with backpressure: never silently drop data packets.
-                await asyncio.wait_for(q.put((end_flag, body)), timeout=10)
+                await asyncio.wait_for(q.put(("error", body)), timeout=15)
             except (asyncio.TimeoutError, asyncio.QueueFull):
-                logger.warning(f"drop download data pkt req_id={req_id} (consumer gone?)")
+                logger.warning(f"drop download error pkt req_id={req_id} (consumer gone?)")
             return
 
         fut = info.pending.pop(req_id, None)

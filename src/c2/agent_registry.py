@@ -30,6 +30,11 @@ class AgentInfo:
     auth_token_valid: bool = True
     next_request_id_min: int = 1_000_000
     write_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # High-level instruction lock: serializes commands / file transfers on
+    # this Agent so concurrent operations from different sessions never
+    # interleave on the single TCP connection. Different Agents each have
+    # their own lock, so multi-Agent sessions stay independent.
+    instruction_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     active_ops: int = 0
 
     def allocate_request_id(self) -> int:

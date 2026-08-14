@@ -30,7 +30,10 @@ class Controller:
 
     def render_system_prompt(self) -> str:
         """Return system_prompt with {system_name} replaced by the active Agent's OS."""
-        agent = self._registry.get_active()
+        return self.render_system_prompt_for(self._registry.get_active())
+
+    def render_system_prompt_for(self, agent) -> str:
+        """Return system_prompt with {system_name} replaced by the given Agent's OS."""
         os_name = agent.os if agent is not None else "Unknown"
         return self._config.system_prompt.replace("{system_name}", os_name)
 

@@ -2,20 +2,21 @@
 
 Per-Agent conversation history is persisted; switching the active
 Agent (via /target) switches which history the next chat iteration
-uses. Commands parsed from LLM output are routed to the active Agent
-through Controller.forwarder.
+uses. Web conversations run as background tasks and are tracked per
+Agent: different Agents can hold concurrent sessions that execute
+independently (each session serializes its own commands via the
+per-Agent instruction lock held by the Forwarder / file transfer).
 
-``chat()`` is the sync entry point used by the CLI (which schedules it
-in a worker thread). Internally it runs ``chat_async()`` via
-``asyncio.run`` so the same code path serves both sync and async
-callers. ``chat_stream()`` is the async generator used by the Web
-SSE endpoint.
+``chat_async()`` is the CLI entry point. ``begin_chat()`` starts a
+background conversation, ``chat_stream()`` is the async generator that
+attaches to / follows a running conversation (used by the Web SSE
+endpoint) and survives page refresh / client disconnect.
 """
 
 import asyncio
 import threading
 import time
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from src.c2.forwarder import NetworkError
 from src.command import action_to_cmd, check_safety, params_for_action
@@ -36,28 +37,33 @@ class AuthResult:
         self.command = command or {}
 
 
+def _new_conversation_state() -> dict:
+    return {
+        "iteration": 0,
+        "phase": "idle",   # idle | llm | exec | auth_wait | done
+        "text": "",
+        "results": [],
+        "pending_command": None,
+        "stop": False,
+    }
+
+
 class ModelModule:
     def __init__(self, controller: Controller):
         self._controller = controller
         config = controller.get_config()
         self._llm = LLMClient(config.api_base, config.api_key)
-        self._web_auth_event: Optional[threading.Event] = None
-        self._web_auth_result: Optional[AuthResult] = None
+        # CLI stop state (chat_async)
         self._stop_lock = threading.Lock()
         self._stop_requested = False
-        self._active_stream_lock = threading.Lock()
-        self._active_stream = None
-        # Background conversation task, decoupled from the SSE client so a
-        # page refresh / client disconnect does not abort the conversation.
-        self._conv_task: Optional[asyncio.Task] = None
-        self._conv_state: dict = {
-            "iteration": 0,
-            "phase": "idle",   # idle | llm | exec | auth_wait | done
-            "text": "",
-            "results": [],
-            "pending_command": None,
-        }
+        # Web: per-Agent conversation state
+        self._conv_tasks: Dict[str, asyncio.Task] = {}
+        self._conv_states: Dict[str, dict] = {}
+        self._streams_lock = threading.Lock()
+        self._active_streams: Dict[str, object] = {}
         self._subscribers: set = set()
+        self._web_auth_events: Dict[str, threading.Event] = {}
+        self._web_auth_results: Dict[str, AuthResult] = {}
 
     def _prompt_auth(self, command: dict) -> AuthResult:
         """Sync CLI prompt; called from a worker thread so input() is safe."""
@@ -105,12 +111,14 @@ class ModelModule:
             print()
         return full
 
-    async def _llm_stream_async(self, messages: list):
+    async def _llm_stream_async(self, messages: list, agent_id: str):
         """Stream LLM chunks from a worker thread.
 
         The OpenAI sync client blocks the event loop while its response is
         iterated. Running the producer in a worker thread keeps /api/stop,
         /api/set-auth and the other endpoints responsive during generation.
+        The stream is tracked per-Agent so stopping one session never closes
+        another session's stream.
         """
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue = asyncio.Queue()
@@ -123,17 +131,17 @@ class ModelModule:
                     model=self._controller.get_config().model,
                     stream=True,
                 )
-                self._set_active_stream(stream)
+                self._set_active_stream(agent_id, stream)
                 for chunk in stream:
-                    if self._is_stop_requested():
+                    if self._stop_requested_for(agent_id):
                         break
                     if chunk.choices and chunk.choices[0].delta.content:
                         loop.call_soon_threadsafe(queue.put_nowait, chunk.choices[0].delta.content)
             except Exception as e:
-                if not self._is_stop_requested():
+                if not self._stop_requested_for(agent_id):
                     loop.call_soon_threadsafe(queue.put_nowait, e)
             finally:
-                self._set_active_stream(None)
+                self._set_active_stream(agent_id, None)
                 if stream is not None:
                     try:
                         stream.close()
@@ -151,7 +159,7 @@ class ModelModule:
                     raise item
                 yield item
         finally:
-            self._close_active_stream()
+            self._close_active_stream(agent_id)
             if not task.done():
                 task.cancel()
                 try:
@@ -160,7 +168,7 @@ class ModelModule:
                     pass
 
     # ----------------------------------------------------------------
-    # Async implementation (shared with chat_stream)
+    # CLI chat
     # ----------------------------------------------------------------
     async def chat_async(self, message: str, stream_to_stdout: bool = False) -> ChatResult:
         self._set_stop(False)
@@ -250,34 +258,42 @@ class ModelModule:
         return ChatResult(response=last_response)
 
     # ----------------------------------------------------------------
-    # Web SSE: background conversation + attach/reconnect
+    # Web: background per-Agent conversation + attach/reconnect
     # ----------------------------------------------------------------
-    def conversation_active(self) -> bool:
-        task = self._conv_task
-        return task is not None and not task.done()
+    def conversation_active(self, agent_id: Optional[str] = None) -> bool:
+        if agent_id is not None:
+            task = self._conv_tasks.get(agent_id)
+            return task is not None and not task.done()
+        return any(t is not None and not t.done() for t in self._conv_tasks.values())
 
-    def begin_chat(self, message: str) -> Optional[str]:
+    def _state(self, agent_id: str) -> dict:
+        return self._conv_states.setdefault(agent_id, _new_conversation_state())
+
+    def _stop_requested_for(self, agent_id: str) -> bool:
+        st = self._conv_states.get(agent_id)
+        return bool(st and st.get("stop"))
+
+    def begin_chat(self, message: str, agent_id: Optional[str] = None) -> Optional[str]:
         """Start a conversation in the background (survives page refresh).
 
         Returns an error string if the conversation cannot be started,
         otherwise None. The conversation keeps running even if every SSE
         client disconnects; callers re-attach via ``chat_stream()``.
+        Different Agents may run conversations concurrently.
         """
-        agent = self._controller.registry.get_active()
-        if agent is None:
-            return "No active agent. Use /target <id>."
-        if self.conversation_active():
-            return "A conversation is already in progress. Please wait for it to finish or press Stop."
-        self._set_stop(False)
-        self._conv_state = {
-            "iteration": 0,
-            "phase": "idle",
-            "text": "",
-            "results": [],
-            "pending_command": None,
-        }
-        self._conv_task = asyncio.get_running_loop().create_task(
-            self._run_conversation(message)
+        if agent_id is None:
+            agent = self._controller.registry.get_active()
+            if agent is None:
+                return "No active agent. Use /target <id>."
+            agent_id = agent.id
+        elif self._controller.registry.get(agent_id) is None:
+            return f"No such agent: {agent_id}"
+        if self.conversation_active(agent_id):
+            return f"A conversation with agent '{agent_id}' is already in progress. Please wait for it to finish or press Stop."
+        st = self._state(agent_id)
+        st.update(_new_conversation_state())
+        self._conv_tasks[agent_id] = asyncio.get_running_loop().create_task(
+            self._run_conversation(agent_id, message)
         )
         return None
 
@@ -289,7 +305,9 @@ class ModelModule:
     def _unsubscribe(self, q) -> None:
         self._subscribers.discard(q)
 
-    def _push_event(self, ev: dict) -> None:
+    def _push_event(self, agent_id: str, ev: dict) -> None:
+        ev = dict(ev)
+        ev["agent"] = agent_id
         for q in list(self._subscribers):
             if q.full():
                 try:
@@ -301,40 +319,46 @@ class ModelModule:
             except asyncio.QueueFull:
                 pass
 
-    async def chat_stream(self, message: Optional[str] = None):
-        """Async generator feeding the Web SSE stream.
+    async def chat_stream(self, message: Optional[str] = None, agent_id: Optional[str] = None):
+        """Async generator feeding the Web SSE stream for one Agent.
 
-        Attaches to the (possibly already running) background conversation:
-        first a snapshot of the in-progress state is replayed so a freshly
-        refreshed page can pick up where it left off, then live events are
-        forwarded until the conversation finishes. ``message`` is accepted
-        for backwards compatibility but conversations are started by
-        ``begin_chat()``.
+        Attaches to the (possibly already running) background conversation of
+        ``agent_id`` (defaults to the active Agent): first a snapshot of the
+        in-progress state is replayed so a freshly refreshed page can pick up
+        where it left off, then live events are forwarded until the
+        conversation finishes. ``message`` is accepted for backwards
+        compatibility but conversations are started by ``begin_chat()``.
         """
-        if message and not self.conversation_active():
-            err = self.begin_chat(message)
+        if agent_id is None:
+            agent = self._controller.registry.get_active()
+            if agent is None:
+                yield {"type": "error", "error": "No active agent. Use /target <id>."}
+                return
+            agent_id = agent.id
+        if message and not self.conversation_active(agent_id):
+            err = self.begin_chat(message, agent_id=agent_id)
             if err:
                 yield {"type": "error", "error": err}
                 return
-        if not self.conversation_active():
+        if not self.conversation_active(agent_id):
             yield {"type": "done", "iteration": 0}
             return
 
         q = self._subscribe()
         try:
-            st = dict(self._conv_state)
+            st = dict(self._conv_states.get(agent_id) or {})
             if st.get("phase") == "done":
-                yield {"type": "done", "iteration": st.get("iteration", 0)}
+                yield {"type": "done", "iteration": st.get("iteration", 0), "agent": agent_id}
                 return
             if st.get("phase") == "llm" and st.get("text"):
-                yield {"type": "answering", "iteration": st.get("iteration", 1)}
-                yield {"type": "chunk", "content": st["text"]}
+                yield {"type": "answering", "iteration": st.get("iteration", 1), "agent": agent_id}
+                yield {"type": "chunk", "content": st["text"], "agent": agent_id}
             elif st.get("phase") == "auth_wait" and st.get("pending_command"):
-                yield {"type": "auth_required", "commands": [st["pending_command"]]}
-                yield {"type": "waiting_auth", "iteration": st.get("iteration", 1)}
+                yield {"type": "auth_required", "commands": [st["pending_command"]], "agent": agent_id}
+                yield {"type": "waiting_auth", "iteration": st.get("iteration", 1), "agent": agent_id}
             elif st.get("phase") == "exec" and st.get("results"):
-                yield {"type": "executing", "commands": []}
-                yield {"type": "execution_done", "results": st["results"]}
+                yield {"type": "executing", "commands": [], "agent": agent_id}
+                yield {"type": "execution_done", "results": st["results"], "agent": agent_id}
 
             while True:
                 try:
@@ -342,22 +366,27 @@ class ModelModule:
                 except asyncio.TimeoutError:
                     yield {"type": "ping"}
                     continue
+                if ev.get("agent") != agent_id:
+                    continue
                 yield ev
                 if ev.get("type") == "done":
                     return
         finally:
             self._unsubscribe(q)
 
-    async def _run_conversation(self, message: str) -> None:
-        """Background conversation loop. Pushes events to subscribers instead
-        of yielding, so it survives the SSE client disconnecting."""
-        self._set_stop(False)
+    async def _run_conversation(self, agent_id: str, message: str) -> None:
+        """Background per-Agent conversation loop. Pushes events to
+        subscribers instead of yielding, so it survives the SSE client
+        disconnecting. Commands are forwarded with ``agent_id`` so the
+        conversation keeps targeting its own Agent even after the active
+        Agent changes; the per-Agent instruction lock serializes them."""
+        st = self._state(agent_id)
         iteration = 0
         stopped = False
         try:
-            agent = self._controller.registry.get_active()
+            agent = self._controller.registry.get(agent_id)
             if agent is None:
-                self._push_event({"type": "error", "error": "No active agent. Use /target <id>."})
+                self._push_event(agent_id, {"type": "error", "error": f"Agent '{agent_id}' is offline."})
                 return
             history = agent.conversation_history
             history.append({"role": "user", "content": message})
@@ -365,20 +394,15 @@ class ModelModule:
             max_iterations = self._controller.get_config().round_limit
 
             while iteration < max_iterations:
-                if self._is_stop_requested():
+                if self._stop_requested_for(agent_id):
                     stopped = True
                     break
                 iteration += 1
-                self._conv_state.update({
-                    "iteration": iteration,
-                    "phase": "llm",
-                    "text": "",
-                    "pending_command": None,
-                })
-                self._push_event({"type": "answering", "iteration": iteration})
+                st.update({"iteration": iteration, "phase": "llm", "text": "", "pending_command": None})
+                self._push_event(agent_id, {"type": "answering", "iteration": iteration})
 
                 messages = [
-                    {"role": "system", "content": self._controller.render_system_prompt()}
+                    {"role": "system", "content": self._controller.render_system_prompt_for(agent)}
                 ]
                 messages.extend(history)
 
@@ -386,21 +410,21 @@ class ModelModule:
                 commands: List = []
 
                 try:
-                    async for content in self._llm_stream_async(messages):
+                    async for content in self._llm_stream_async(messages, agent_id):
                         full_response += content
-                        self._conv_state["text"] = full_response
-                        self._push_event({"type": "chunk", "content": content})
+                        st["text"] = full_response
+                        self._push_event(agent_id, {"type": "chunk", "content": content})
 
                     history.append({"role": "assistant", "content": full_response})
-                    self._conv_state["text"] = ""
+                    st["text"] = ""
 
-                    if self._is_stop_requested():
+                    if self._stop_requested_for(agent_id):
                         stopped = True
                         break
 
                     parsed_commands, parse_errors = CommandParser.parse(full_response)
                     if parse_errors:
-                        self._push_event({"type": "parse_error", "errors": parse_errors})
+                        self._push_event(agent_id, {"type": "parse_error", "errors": parse_errors})
                         history.append({
                             "role": "user",
                             "content": f"JSON parse error occurred. Please fix the JSON format and resend:\n{parse_errors}",
@@ -408,7 +432,7 @@ class ModelModule:
                         continue
 
                     commands = parsed_commands
-                    self._push_event({"type": "response_done", "iteration": iteration, "commands": commands})
+                    self._push_event(agent_id, {"type": "response_done", "iteration": iteration, "commands": commands})
 
                     if not commands:
                         if not parse_errors:
@@ -416,9 +440,9 @@ class ModelModule:
                         continue
 
                     all_results = []
-                    self._conv_state.update({"phase": "exec", "results": []})
+                    st.update({"phase": "exec", "results": []})
                     for cmd in commands:
-                        if self._is_stop_requested():
+                        if self._stop_requested_for(agent_id):
                             stopped = True
                             break
 
@@ -428,43 +452,43 @@ class ModelModule:
                         if action == "exec_cmd" and not check_safety(params_dict.get("command", "")):
                             result_str = "Error: Command blocked due to safety concerns"
                             all_results.append({"action": action, "params": params_dict, "result": result_str})
-                            self._conv_state["results"] = list(all_results)
-                            self._push_event({"type": "execution_done", "results": all_results[-1:]})
+                            st["results"] = list(all_results)
+                            self._push_event(agent_id, {"type": "execution_done", "results": all_results[-1:]})
                             continue
 
                         if self._controller.get_auth_mode() == 0:
-                            self._conv_state.update({"phase": "auth_wait", "pending_command": cmd})
-                            self._push_event({"type": "auth_required", "commands": [cmd]})
-                            self._push_event({"type": "waiting_auth", "iteration": iteration})
-                            authorized = await self._await_web_auth()
-                            self._conv_state["pending_command"] = None
-                            self._conv_state["phase"] = "exec"
-                            if self._is_stop_requested():
+                            st.update({"phase": "auth_wait", "pending_command": cmd})
+                            self._push_event(agent_id, {"type": "auth_required", "commands": [cmd]})
+                            self._push_event(agent_id, {"type": "waiting_auth", "iteration": iteration})
+                            authorized = await self._await_web_auth(agent_id)
+                            st["pending_command"] = None
+                            st["phase"] = "exec"
+                            if self._stop_requested_for(agent_id):
                                 stopped = True
                                 break
                             if not authorized:
-                                self._push_event({"type": "auth_denied", "message": "User denied command execution"})
+                                self._push_event(agent_id, {"type": "auth_denied", "message": "User denied command execution"})
                                 result_str = "Error: User denied command execution"
                                 all_results.append({"action": action, "params": params_dict, "result": result_str})
-                                self._conv_state["results"] = list(all_results)
-                                self._push_event({"type": "execution_done", "results": all_results[-1:]})
+                                st["results"] = list(all_results)
+                                self._push_event(agent_id, {"type": "execution_done", "results": all_results[-1:]})
                                 continue
 
-                        self._push_event({"type": "executing", "commands": [cmd]})
+                        self._push_event(agent_id, {"type": "executing", "commands": [cmd]})
                         cmd_code = action_to_cmd(action)
                         if cmd_code < 0:
                             result_str = f"Error: Unknown action: {action}"
                         else:
                             params = params_for_action(action, params_dict)
                             try:
-                                result_str = await self._controller.forwarder.forward(cmd_code, params)
+                                result_str = await self._controller.forwarder.forward(cmd_code, params, agent_id=agent_id)
                             except NetworkError as e:
-                                self._push_event({"type": "error", "error": str(e)})
+                                self._push_event(agent_id, {"type": "error", "error": str(e)})
                                 history.append({"role": "user", "content": f"[Network Error] {e}"})
                                 return
                         all_results.append({"action": action, "params": params_dict, "result": result_str})
-                        self._conv_state["results"] = list(all_results)
-                        self._push_event({"type": "execution_done", "results": all_results[-1:]})
+                        st["results"] = list(all_results)
+                        self._push_event(agent_id, {"type": "execution_done", "results": all_results[-1:]})
 
                     if stopped:
                         break
@@ -472,61 +496,77 @@ class ModelModule:
                     result_text = "\n".join(self._format_result(r) for r in all_results)
                     history.append({"role": "user", "content": f"Command execution result:\n{result_text}"})
                 except Exception as e:
-                    self._push_event({"type": "error", "error": str(e)})
+                    self._push_event(agent_id, {"type": "error", "error": str(e)})
                     break
         except Exception as e:
             try:
-                self._push_event({"type": "error", "error": str(e)})
+                self._push_event(agent_id, {"type": "error", "error": str(e)})
             except Exception:
                 pass
         finally:
-            self._conv_state["phase"] = "done"
+            st["phase"] = "done"
             if stopped:
-                self._push_event({"type": "stopped", "iteration": iteration})
-            self._push_event({"type": "done", "iteration": iteration})
-            self._conv_task = None
+                self._push_event(agent_id, {"type": "stopped", "iteration": iteration})
+            self._push_event(agent_id, {"type": "done", "iteration": iteration})
+            self._conv_tasks.pop(agent_id, None)
 
-    async def _await_web_auth(self) -> bool:
-        """Wait for the web client to call /api/authorize-execute.
+    # ----------------------------------------------------------------
+    # Web authorization (per Agent)
+    # ----------------------------------------------------------------
+    async def _await_web_auth(self, agent_id: str) -> bool:
+        """Wait for the web client to call /api/authorize-execute for this
+        Agent's conversation. Runs the blocking wait in a worker thread so
+        the event loop stays free for other endpoints while waiting."""
+        self._web_auth_events[agent_id] = threading.Event()
+        self._web_auth_results[agent_id] = None
+        return await asyncio.to_thread(self._wait_web_auth, agent_id)
 
-        Runs the blocking wait in a worker thread so the event loop stays
-        free for other endpoints (set-auth / stop / file ops) while a
-        command is awaiting authorization.
-        """
-        self._web_auth_event = threading.Event()
-        self._web_auth_result = None
-        return await asyncio.to_thread(self._wait_web_auth)
-
-    def _wait_web_auth(self) -> bool:
-        if self._web_auth_event is None:
+    def _wait_web_auth(self, agent_id: str) -> bool:
+        ev = self._web_auth_events.get(agent_id)
+        if ev is None:
             return False
         deadline = time.time() + 300
-        while not self._web_auth_event.is_set():
-            if self._is_stop_requested():
+        while not ev.is_set():
+            if self._stop_requested_for(agent_id):
                 return False
             if self._controller.get_auth_mode() == 1:
                 return True
             remaining = deadline - time.time()
             if remaining <= 0:
                 break
-            self._web_auth_event.wait(timeout=min(1.0, remaining))
-        if self._web_auth_event.is_set() and self._web_auth_result is not None:
-            return self._web_auth_result.authorized
+            ev.wait(timeout=min(1.0, remaining))
+        if ev.is_set() and self._web_auth_results.get(agent_id) is not None:
+            return self._web_auth_results[agent_id].authorized
         return False
 
-    def submit_web_auth(self, authorized: bool, commands: list):
+    def submit_web_auth(self, authorized: bool, commands: list, agent_id: Optional[str] = None):
         """Called by /api/authorize-execute when the web client decides."""
-        self._web_auth_result = AuthResult(
+        if agent_id is None:
+            agent_id = self._controller.registry.active_id
+        if agent_id is None:
+            return
+        self._web_auth_results[agent_id] = AuthResult(
             authorized=bool(authorized),
             command=commands[0] if commands else {},
         )
-        if self._web_auth_event is not None:
-            self._web_auth_event.set()
+        ev = self._web_auth_events.get(agent_id)
+        if ev is not None:
+            ev.set()
 
-    def stop(self):
-        """Request interruption of the current conversation loop."""
-        self._set_stop(True)
-        self._close_active_stream()
+    # ----------------------------------------------------------------
+    # Stop / stream helpers
+    # ----------------------------------------------------------------
+    def stop(self, agent_id: Optional[str] = None):
+        """Request interruption of a conversation (defaults to the active
+        Agent's conversation)."""
+        if agent_id is None:
+            agent_id = self._controller.registry.active_id
+        if agent_id is None:
+            return
+        st = self._conv_states.get(agent_id)
+        if st is not None:
+            st["stop"] = True
+        self._close_active_stream(agent_id)
 
     def _is_stop_requested(self) -> bool:
         with self._stop_lock:
@@ -536,21 +576,19 @@ class ModelModule:
         with self._stop_lock:
             self._stop_requested = requested
 
-    def _set_active_stream(self, stream) -> None:
-        with self._active_stream_lock:
-            self._active_stream = stream
+    def _set_active_stream(self, agent_id: str, stream) -> None:
+        with self._streams_lock:
+            self._active_streams[agent_id] = stream
 
-    def _get_active_stream(self):
-        with self._active_stream_lock:
-            return self._active_stream
-
-    def _close_active_stream(self) -> None:
-        stream = self._get_active_stream()
-        if stream is not None:
-            try:
-                stream.close()
-            except Exception:
-                pass
+    def _close_active_stream(self, agent_id: str) -> None:
+        with self._streams_lock:
+            stream = self._active_streams.get(agent_id)
+            if stream is not None:
+                try:
+                    stream.close()
+                except Exception:
+                    pass
+                self._active_streams[agent_id] = None
 
     @staticmethod
     def _format_result(ex: dict) -> str:
@@ -566,6 +604,9 @@ class ModelModule:
         agent.conversation_history = []
         self._controller.reset_auth()
         self._set_stop(False)
+        st = self._conv_states.get(agent.id)
+        if st is not None:
+            st["stop"] = False
 
     def get_history(self) -> list:
         agent = self._controller.registry.get_active()
