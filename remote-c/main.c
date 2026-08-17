@@ -371,9 +371,10 @@ static int handle_upload(sockfd_t sock, bytebuf_t *inbuf, uint64_t req_id,
         uint32_t l;
         int have = take_packet_blocking(sock, inbuf, &rid, &c, &b, &l, timeout_ms);
         if (have <= 0) break;
+        if (c >= 0x80) continue; /* skip control packets (heartbeat_ack etc.), like the Python agent */
         if (rid != req_id) break; /* protocol violation */
         if (l) {
-            fwrite(b, 1, l, f);
+            if (fwrite(b, 1, l, f) != l) { ok = 0; break; } /* short write */
             total += l;
         }
         if (c == END_FLAG_LAST) { ok = 1; break; }

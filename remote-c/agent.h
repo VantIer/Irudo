@@ -81,11 +81,16 @@ typedef int sockfd_t;
 #define IRU_ULL "llu"
 #endif
 
-/* ---------- incoming stream buffer ---------- */
+/* ---------- incoming stream buffer ----------
+   Valid bytes are data[off .. off+len). `off` is the consumed prefix;
+   bb_take_packet advances it instead of memmove-ing, so a returned *body
+   pointer stays valid until the next bb_append (which compacts) or the
+   next bb_take_packet call. */
 typedef struct {
     uint8_t *data;
     size_t len;
     size_t cap;
+    size_t off;
 } bytebuf_t;
 
 void bb_init(bytebuf_t *b);

@@ -42,10 +42,21 @@ static void bb_grow(bytebuf_t *b, size_t need) {
     if (nd) { b->data = nd; b->cap = newcap; }
 }
 
-void bb_init(bytebuf_t *b) { b->data = NULL; b->len = 0; b->cap = 0; }
-void bb_free(bytebuf_t *b) { free(b->data); b->data = NULL; b->len = b->cap = 0; }
+void bb_init(bytebuf_t *b) { b->data = NULL; b->len = 0; b->cap = 0; b->off = 0; }
+void bb_free(bytebuf_t *b) { free(b->data); b->data = NULL; b->len = b->cap = b->off = 0; }
 
 int bb_append(bytebuf_t *b, const uint8_t *d, size_t n) {
+    if (b->off > 0) {
+        /* compact the consumed prefix to the front before appending */
+        if (b->off >= b->len) {
+            b->off = 0;
+            b->len = 0;
+        } else {
+            memmove(b->data, b->data + b->off, b->len - b->off);
+            b->len -= b->off;
+            b->off = 0;
+        }
+    }
     if (b->len + n > b->cap) bb_grow(b, b->len + n);
     if (b->len + n > b->cap) return -1; /* alloc failed */
     memcpy(b->data + b->len, d, n);
@@ -84,17 +95,19 @@ static void write_header(uint8_t *buf, uint64_t req_id, uint32_t body_len, uint8
 
 int bb_take_packet(bytebuf_t *b, uint64_t *req_id, uint8_t *cmd,
                    const uint8_t **body, uint32_t *body_len) {
-    if (b->len < PACKET_HEADER_LEN) return 0;
-    uint64_t rid = read_u64_le(b->data);
-    uint32_t blen = read_u32_le(b->data + 8);
-    if (b->len < PACKET_HEADER_LEN + blen) return 0;
+    if (b->len - b->off < PACKET_HEADER_LEN) return 0;
+    uint64_t rid = read_u64_le(b->data + b->off);
+    uint32_t blen = read_u32_le(b->data + b->off + 8);
+    if (b->len - b->off < PACKET_HEADER_LEN + blen) return 0;
     *req_id = rid;
-    *cmd = b->data[15];
-    *body = b->data + PACKET_HEADER_LEN;
+    *cmd = b->data[b->off + 15];
+    *body = b->data + b->off + PACKET_HEADER_LEN;
     *body_len = blen;
-    size_t total = PACKET_HEADER_LEN + blen;
-    memmove(b->data, b->data + total, b->len - total);
-    b->len -= total;
+    b->off += PACKET_HEADER_LEN + blen;
+    if (b->off >= b->len) {
+        b->off = 0;
+        b->len = 0;
+    }
     return 1;
 }
 
