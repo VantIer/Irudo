@@ -178,11 +178,10 @@ class ModelModule:
         history = agent.conversation_history
         history.append({"role": "user", "content": message})
 
-        max_iterations = self._controller.get_config().round_limit
         iteration = 0
         last_response = ""
 
-        while iteration < max_iterations:
+        while not self._round_limit_reached(iteration):
             iteration += 1
             messages = [
                 {"role": "system", "content": self._controller.render_system_prompt()}
@@ -221,6 +220,7 @@ class ModelModule:
                         continue
 
                     if self._controller.get_auth_mode() == 0:
+                        iteration = 0
                         ar = await asyncio.to_thread(self._prompt_auth, cmd)
                         if not ar.authorized:
                             executions.append((f"[{action}]", "Error: User denied command execution"))
@@ -272,6 +272,18 @@ class ModelModule:
     def _stop_requested_for(self, agent_id: str) -> bool:
         st = self._conv_states.get(agent_id)
         return bool(st and st.get("stop"))
+
+    def _round_limit_reached(self, iteration: int) -> bool:
+        """True when the conversation loop must stop due to round_limit.
+
+        The limit only applies in auto-authorize mode (auth_mode == 1).
+        When user authorization is required (auth_mode == 0) the round
+        limit is not enforced: the conversation may keep iterating as
+        long as the user keeps approving commands.
+        """
+        if self._controller.get_auth_mode() != 1:
+            return False
+        return iteration >= self._controller.get_config().round_limit
 
     def begin_chat(self, message: str, agent_id: Optional[str] = None) -> Optional[str]:
         """Start a conversation in the background (survives page refresh).
@@ -391,9 +403,7 @@ class ModelModule:
             history = agent.conversation_history
             history.append({"role": "user", "content": message})
 
-            max_iterations = self._controller.get_config().round_limit
-
-            while iteration < max_iterations:
+            while not self._round_limit_reached(iteration):
                 if self._stop_requested_for(agent_id):
                     stopped = True
                     break
@@ -457,7 +467,8 @@ class ModelModule:
                             continue
 
                         if self._controller.get_auth_mode() == 0:
-                            st.update({"phase": "auth_wait", "pending_command": cmd})
+                            iteration = 0
+                            st.update({"iteration": iteration, "phase": "auth_wait", "pending_command": cmd})
                             self._push_event(agent_id, {"type": "auth_required", "commands": [cmd]})
                             self._push_event(agent_id, {"type": "waiting_auth", "iteration": iteration})
                             authorized = await self._await_web_auth(agent_id)
