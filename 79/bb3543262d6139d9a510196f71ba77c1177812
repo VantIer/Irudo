@@ -1,0 +1,18 @@
+README.md
+  h_f63364b2177cf7 29,161
+src/model.py
+  h_f63364b2177cf7 184,223,276-287,406,470-471
+设计文档.md
+  h_f63364b2177cf7 480,638
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.24",
+  "base_commit_sha": "79bb3543262d6139d9a510196f71ba77c1177812",
+  "prompts": {},
+  "humans": {
+    "h_f63364b2177cf7": {
+      "author": "VantIer <vantler@live.cn>"
+    }
+  }
+}
