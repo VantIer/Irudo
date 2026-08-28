@@ -1,0 +1,22 @@
+src/c2/agent_registry.py
+  h_f63364b2177cf7 140
+src/c2/network_server.py
+  h_f63364b2177cf7 365
+src/model.py
+  h_f63364b2177cf7 43,363,367,394,409-411,444,470,472,519-520
+src/web_server.py
+  h_f63364b2177cf7 41
+web/index.html
+  h_f63364b2177cf7 1013-1014
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.24",
+  "base_commit_sha": "59a5986bb0e613ff69a914163865697ab751257c",
+  "prompts": {},
+  "humans": {
+    "h_f63364b2177cf7": {
+      "author": "VantIer <vantler@live.cn>"
+    }
+  }
+}
