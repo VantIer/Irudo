@@ -138,9 +138,3 @@ class AgentRegistry:
         info = self._agents.get(agent_id)
         if info is not None:
             info.last_heartbeat = time.time()
-
-    def history_of(self, agent_id: str) -> List[dict]:
-        info = self._agents.get(agent_id)
-        if info is None:
-            return []
-        return info.conversation_history

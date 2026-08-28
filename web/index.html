@@ -17,7 +17,6 @@
             --accent-2: #8b5cf6;
             --accent-soft: #eef0ff;
             --danger: #ef4444;
-            --danger-soft: #fee2e2;
             --success: #10b981;
             --warning: #f59e0b;
             --top-btn-red: #fca5a5;
@@ -45,7 +44,6 @@
             --accent-2: #a78bfa;
             --accent-soft: #232741;
             --danger: #f87171;
-            --danger-soft: #3a2226;
             --success: #34d399;
             --warning: #fbbf24;
             --top-btn-red: #7f1d1d;
@@ -103,24 +101,6 @@
             box-shadow: 0 4px 12px rgba(99, 102, 241, 0.35);
         }
         .spacer { flex: 1; }
-        .badge {
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            padding: 5px 10px;
-            border-radius: 999px;
-            font-size: 12px;
-            font-weight: 500;
-            background: var(--accent-soft);
-            color: var(--accent);
-            white-space: nowrap;
-        }
-        .badge .dot {
-            width: 7px; height: 7px; border-radius: 50%;
-            background: currentColor;
-        }
-        .badge.success { color: var(--success); background: rgba(16, 185, 129, 0.12); }
-        .badge.danger { color: var(--danger); background: var(--danger-soft); }
         .top-actions { display: flex; gap: 8px; }
         .icon-btn {
             display: inline-flex;
@@ -466,8 +446,6 @@
             gap: 12px;
         }
         .files-panel.visible { display: flex; }
-        .files-head { display: flex; align-items: center; gap: 10px; }
-        .files-head h2 { font-size: 15px; font-weight: 600; }
         .files-toolbar { display: flex; gap: 8px; flex-wrap: wrap; }
         .files-path-row { display: flex; gap: 8px; }
         .files-path-row .text-input { flex: 1; }
@@ -1032,8 +1010,8 @@
             if (gen !== renderGen) return;
             switch (data.type) {
                 case 'answering':
-                    setTyping(`AI is thinking... (Round ${data.iteration})`, true);
-                    if (data.iteration > 1) aiSpan = createAiMessageBlock();
+                    setTyping(`AI is thinking... (Round ${data.turn})`, true);
+                    if (data.turn > 1) aiSpan = createAiMessageBlock();
                     break;
                 case 'chunk':
                     ensureAiBlock();

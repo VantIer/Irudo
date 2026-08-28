@@ -43,10 +43,6 @@ from remote.local_executor import execute as exec_action
 logger = logging.getLogger(__name__)
 
 
-class HandlerError(Exception):
-    pass
-
-
 class Handler:
     """Stateful dispatcher for incoming packets on the Agent side."""
 

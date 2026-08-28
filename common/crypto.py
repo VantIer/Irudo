@@ -102,17 +102,6 @@ class ChaCha20:
         return bytes(out)
 
 
-def build_crypto_pair(key: bytes, is_c2: bool):
-    """Return (tx, rx) ChaCha20 contexts for one endpoint.
-
-    ``is_c2=True``: tx encrypts C2 -> Agent, rx decrypts Agent -> C2.
-    ``is_c2=False`` (agent): tx encrypts Agent -> C2, rx decrypts C2 -> Agent.
-    """
-    if is_c2:
-        return ChaCha20(key, NONCE_C2_TO_AGENT), ChaCha20(key, NONCE_AGENT_TO_C2)
-    return ChaCha20(key, NONCE_AGENT_TO_C2), ChaCha20(key, NONCE_C2_TO_AGENT)
-
-
 class EncryptedStream:
     """Transparently encrypts writes / decrypts reads on a connection.
 
@@ -140,10 +129,6 @@ class EncryptedStream:
             raw = await self._reader.read(n)
         if not raw:
             return raw
-        return self._rx.crypt(raw)
-
-    async def readexactly(self, n: int) -> bytes:
-        raw = await self._reader.readexactly(n)
         return self._rx.crypt(raw)
 
     def absorb_leftover(self, pr) -> None:

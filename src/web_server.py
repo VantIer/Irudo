@@ -12,7 +12,6 @@ Endpoints:
 - ``/api/chat-stream``         - SSE chat stream
 - ``/api/exec-cmd``            - direct command execution (active Agent)
 - ``/api/files/list``          - list dir on active Agent
-- ``/api/files/cwd``           - get/set cwd
 - ``/api/files/parent``        - go to parent dir
 - ``/api/files/chdir``         - change dir
 - ``/api/files/new``           - new file
@@ -25,7 +24,6 @@ Endpoints:
 """
 
 import argparse
-import asyncio
 import json
 import os
 import posixpath
@@ -40,7 +38,7 @@ else:
     base_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, base_path)
 
-from fastapi import FastAPI, File, Form, Request, UploadFile
+from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 import uvicorn
 
@@ -292,14 +290,6 @@ class WebApp:
                 return JSONResponse({"error": str(e)}, status_code=503)
             except Exception as e:
                 return JSONResponse({"error": str(e)}, status_code=500)
-
-        @self._app.post("/api/files/cwd")
-        async def get_cwd():
-            try:
-                cwd = await _ensure_cwd()
-                return {"current_path": cwd}
-            except NetworkError as e:
-                return JSONResponse({"error": str(e)}, status_code=503)
 
         @self._app.post("/api/files/parent")
         async def parent_dir():

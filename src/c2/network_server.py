@@ -32,7 +32,6 @@ from common.protocol import (
     PacketReader,
     ProtocolError,
     decode_tlv,
-    encode_control,
     encode_response,
 )
 
@@ -364,12 +363,3 @@ class NetworkServer:
                 fut.set_result(body.decode("utf-8", errors="replace"))
             except Exception as e:
                 fut.set_exception(e)
-
-    async def disconnect_all(self) -> None:
-        for info in self._registry.list_all():
-            try:
-                async with info.write_lock:
-                    info.writer.write(encode_control(0, CMD_DISCONNECT, ["server shutdown"]))
-                    await info.writer.drain()
-            except Exception:
-                pass

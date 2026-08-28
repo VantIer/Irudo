@@ -40,6 +40,7 @@ class AuthResult:
 def _new_conversation_state() -> dict:
     return {
         "iteration": 0,
+        "turn": 0,         # 单调递增轮次，专用于事件上报（不受 iteration 清零影响）
         "phase": "idle",   # idle | llm | exec | auth_wait | done
         "text": "",
         "results": [],
@@ -53,9 +54,6 @@ class ModelModule:
         self._controller = controller
         config = controller.get_config()
         self._llm = LLMClient(config.api_base, config.api_key)
-        # CLI stop state (chat_async)
-        self._stop_lock = threading.Lock()
-        self._stop_requested = False
         # Web: per-Agent conversation state
         self._conv_tasks: Dict[str, asyncio.Task] = {}
         self._conv_states: Dict[str, dict] = {}
@@ -171,7 +169,6 @@ class ModelModule:
     # CLI chat
     # ----------------------------------------------------------------
     async def chat_async(self, message: str, stream_to_stdout: bool = False) -> ChatResult:
-        self._set_stop(False)
         agent = self._controller.registry.get_active()
         if agent is None:
             return ChatResult(error="No active agent. Use /agents and /target <id>.")
@@ -363,11 +360,11 @@ class ModelModule:
                 yield {"type": "done", "iteration": st.get("iteration", 0), "agent": agent_id}
                 return
             if st.get("phase") == "llm" and st.get("text"):
-                yield {"type": "answering", "iteration": st.get("iteration", 1), "agent": agent_id}
+                yield {"type": "answering", "iteration": st.get("iteration", 1), "turn": st.get("turn", 1), "agent": agent_id}
                 yield {"type": "chunk", "content": st["text"], "agent": agent_id}
             elif st.get("phase") == "auth_wait" and st.get("pending_command"):
                 yield {"type": "auth_required", "commands": [st["pending_command"]], "agent": agent_id}
-                yield {"type": "waiting_auth", "iteration": st.get("iteration", 1), "agent": agent_id}
+                yield {"type": "waiting_auth", "iteration": st.get("iteration", 1), "turn": st.get("turn", 1), "agent": agent_id}
             elif st.get("phase") == "exec" and st.get("results"):
                 yield {"type": "executing", "commands": [], "agent": agent_id}
                 yield {"type": "execution_done", "results": st["results"], "agent": agent_id}
@@ -394,6 +391,7 @@ class ModelModule:
         Agent changes; the per-Agent instruction lock serializes them."""
         st = self._state(agent_id)
         iteration = 0
+        turn = 0
         stopped = False
         try:
             agent = self._controller.registry.get(agent_id)
@@ -408,8 +406,9 @@ class ModelModule:
                     stopped = True
                     break
                 iteration += 1
-                st.update({"iteration": iteration, "phase": "llm", "text": "", "pending_command": None})
-                self._push_event(agent_id, {"type": "answering", "iteration": iteration})
+                turn += 1
+                st.update({"iteration": iteration, "turn": turn, "phase": "llm", "text": "", "pending_command": None})
+                self._push_event(agent_id, {"type": "answering", "iteration": iteration, "turn": turn})
 
                 messages = [
                     {"role": "system", "content": self._controller.render_system_prompt_for(agent)}
@@ -442,7 +441,7 @@ class ModelModule:
                         continue
 
                     commands = parsed_commands
-                    self._push_event(agent_id, {"type": "response_done", "iteration": iteration, "commands": commands})
+                    self._push_event(agent_id, {"type": "response_done", "iteration": iteration, "turn": turn, "commands": commands})
 
                     if not commands:
                         if not parse_errors:
@@ -468,9 +467,9 @@ class ModelModule:
 
                         if self._controller.get_auth_mode() == 0:
                             iteration = 0
-                            st.update({"iteration": iteration, "phase": "auth_wait", "pending_command": cmd})
+                            st.update({"iteration": iteration, "turn": turn, "phase": "auth_wait", "pending_command": cmd})
                             self._push_event(agent_id, {"type": "auth_required", "commands": [cmd]})
-                            self._push_event(agent_id, {"type": "waiting_auth", "iteration": iteration})
+                            self._push_event(agent_id, {"type": "waiting_auth", "iteration": iteration, "turn": turn})
                             authorized = await self._await_web_auth(agent_id)
                             st["pending_command"] = None
                             st["phase"] = "exec"
@@ -517,8 +516,8 @@ class ModelModule:
         finally:
             st["phase"] = "done"
             if stopped:
-                self._push_event(agent_id, {"type": "stopped", "iteration": iteration})
-            self._push_event(agent_id, {"type": "done", "iteration": iteration})
+                self._push_event(agent_id, {"type": "stopped", "iteration": iteration, "turn": turn})
+            self._push_event(agent_id, {"type": "done", "iteration": iteration, "turn": turn})
             self._conv_tasks.pop(agent_id, None)
 
     # ----------------------------------------------------------------
@@ -579,14 +578,6 @@ class ModelModule:
             st["stop"] = True
         self._close_active_stream(agent_id)
 
-    def _is_stop_requested(self) -> bool:
-        with self._stop_lock:
-            return self._stop_requested
-
-    def _set_stop(self, requested: bool):
-        with self._stop_lock:
-            self._stop_requested = requested
-
     def _set_active_stream(self, agent_id: str, stream) -> None:
         with self._streams_lock:
             self._active_streams[agent_id] = stream
@@ -614,7 +605,6 @@ class ModelModule:
             return
         agent.conversation_history = []
         self._controller.reset_auth()
-        self._set_stop(False)
         st = self._conv_states.get(agent.id)
         if st is not None:
             st["stop"] = False
