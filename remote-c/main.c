@@ -203,6 +203,14 @@ static sockfd_t tcp_connect(const char *host, int port) {
     for (rp = res; rp; rp = rp->ai_next) {
         sock = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
         if (sock == SOCK_ERR) continue;
+#ifndef _WIN32
+        /* Close-on-exec: never let exec_cmd()'s fork+exec children (or any
+         * background daemon they spawn) inherit this control socket. If they
+         * did, the socket would stay open after this process exits, the C2
+         * would never see EOF, and the Agent would only be dropped by the C2
+         * heartbeat watchdog instead of right away. */
+        fcntl(sock, F_SETFD, FD_CLOEXEC);
+#endif
         if (connect(sock, rp->ai_addr, (int)rp->ai_addrlen) == 0) break;
         sock_close(sock);
         sock = SOCK_ERR;

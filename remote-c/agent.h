@@ -24,6 +24,7 @@ typedef SOCKET sockfd_t;
 #else
 #include <unistd.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
