@@ -1,0 +1,16 @@
+remote-c/agent.h
+  h_f63364b2177cf7 27
+remote-c/main.c
+  h_f63364b2177cf7 206-213
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.24",
+  "base_commit_sha": "52fe81a16ff305adca264b22ceab6c96955d7394",
+  "prompts": {},
+  "humans": {
+    "h_f63364b2177cf7": {
+      "author": "VantIer <vantler@live.cn>"
+    }
+  }
+}
