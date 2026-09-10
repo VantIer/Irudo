@@ -1,0 +1,46 @@
+README.md
+  h_f63364b2177cf7 28-29,161,223,244,251
+remote-c/COMPILE.txt
+  h_f63364b2177cf7 37-38,76-83
+remote-c/actions.c
+  h_f63364b2177cf7 12,28,30,44-54,56-76,78,84-91,94-96,98-100,104,110-115,125-127,131-132,134,234-236,253,266,279,356,480,517
+remote-c/agent.h
+  h_f63364b2177cf7 21-22,151-169
+remote-c/exec_cmd.c
+  h_f63364b2177cf7 38,49-70,72,74,131-133
+remote-c/main.c
+  h_f63364b2177cf7 84,365,398,428,603-625,630-637
+remote-c/protocol.c
+  h_f63364b2177cf7 278-280,290-292,303,351-357,387-510
+remote/handler.py
+  h_f63364b2177cf7 56,135,140
+src/c2/network_server.py
+  h_f63364b2177cf7 292
+src/command.py
+  h_f63364b2177cf7 18-20,30-48
+src/config.py
+  h_f63364b2177cf7 60-67
+src/controller.py
+  h_f63364b2177cf7 12,15-16,48-49,53-59
+src/main.py
+  h_f63364b2177cf7 27-33,41,46-48,75,127-138
+src/model.py
+  h_f63364b2177cf7 79-83,91-102,229,235,286-289,476,493,550-552
+src/web_server.py
+  h_f63364b2177cf7 153-156
+web/index.html
+  h_f63364b2177cf7 489-549,712-716,718,793-795,957-962,964-971,975,978-982,1225-1227,1229
+设计文档.md
+  h_f63364b2177cf7 413,441-462,502,657,661,807
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.0",
+  "base_commit_sha": "822d62da20496005353ccdee88a5bcaafa3c4eab",
+  "prompts": {},
+  "humans": {
+    "h_f63364b2177cf7": {
+      "author": "VantIer <vantler@live.cn>"
+    }
+  }
+}
