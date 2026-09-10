@@ -49,23 +49,15 @@ class Handler:
     def __init__(
         self,
         cmd_timeout: int = 60,
-        write_lock: Optional[asyncio.Lock] = None,
         on_shutdown: Optional[callable] = None,
     ) -> None:
         self._cmd_timeout = cmd_timeout
         self._reader = PacketReader()
-        self._write_lock = write_lock
+        self._write_lock: Optional[asyncio.Lock] = None
         self._on_shutdown = on_shutdown
 
     def feed(self, data: bytes) -> None:
         self._reader.feed(data)
-
-    def next_packet(self):
-        return self._reader.next_packet()
-
-    @property
-    def buffered(self) -> int:
-        return self._reader.buffered
 
     def reset(self) -> None:
         """Drop any buffered packets from a previous connection."""
@@ -140,20 +132,12 @@ class Handler:
             return
 
         if cmd == CMD_UPLOAD:
-            try:
-                params = decode_tlv(body)
-            except ProtocolError as e:
-                params = []
-            logger.debug(f"recv cmd req_id={req_id} cmd=upload params={params}")
+            logger.debug(f"recv cmd req_id={req_id} cmd=upload")
             await self._handle_upload(reader, writer, req_id, body)
             return
 
         if cmd == CMD_DOWNLOAD:
-            try:
-                params = decode_tlv(body)
-            except ProtocolError as e:
-                params = []
-            logger.debug(f"recv cmd req_id={req_id} cmd=download params={params}")
+            logger.debug(f"recv cmd req_id={req_id} cmd=download")
             await self._handle_download(writer, req_id, body)
             return
 

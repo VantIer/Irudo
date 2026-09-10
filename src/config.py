@@ -57,7 +57,14 @@ class Config:
             self.model = data.get("model", self.model)
             self.round_limit = data.get("round_limit", self.round_limit)
             self.cmd_timeout = data.get("cmd_timeout", self.cmd_timeout)
-            self.auth_mode = data.get("auth_mode", self.auth_mode)
+            auth_mode = data.get("auth_mode", self.auth_mode)
+            try:
+                auth_mode = int(auth_mode)
+            except (TypeError, ValueError):
+                auth_mode = 0
+            if auth_mode not in (0, 1, 2):
+                auth_mode = 0
+            self.auth_mode = auth_mode
             self.system_prompt = data.get("system_prompt", self.system_prompt)
             self.listen_host = data.get("listen_host", self.listen_host)
             self.listen_port = data.get("listen_port", self.listen_port)

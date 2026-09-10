@@ -275,7 +275,9 @@ int take_packet_blocking(sockfd_t sock, bytebuf_t *b,
 
 int path_exists(const char *p) {
 #ifdef _WIN32
-    DWORD a = GetFileAttributesA(p);
+    wchar_t *wp = utf8_to_wide(p);
+    DWORD a = wp ? GetFileAttributesW(wp) : INVALID_FILE_ATTRIBUTES;
+    free(wp);
     return a != INVALID_FILE_ATTRIBUTES;
 #else
     struct stat st;
@@ -285,7 +287,9 @@ int path_exists(const char *p) {
 
 int is_dir(const char *p) {
 #ifdef _WIN32
-    DWORD a = GetFileAttributesA(p);
+    wchar_t *wp = utf8_to_wide(p);
+    DWORD a = wp ? GetFileAttributesW(wp) : INVALID_FILE_ATTRIBUTES;
+    free(wp);
     if (a == INVALID_FILE_ATTRIBUTES) return 0;
     return (a & FILE_ATTRIBUTE_DIRECTORY) != 0;
 #else
@@ -296,11 +300,7 @@ int is_dir(const char *p) {
 }
 
 static int mkdir_one(const char *p) {
-#ifdef _WIN32
-    return _mkdir(p);
-#else
-    return mkdir(p, 0755);
-#endif
+    return iru_mkdir(p);
 }
 void mkdir_p(const char *path) {
     char tmp[PROTO_MAX_PATH];
@@ -348,8 +348,13 @@ char *detect_os(void) {
 
 int get_hostname(char *buf, size_t n) {
 #ifdef _WIN32
-    DWORD sz = (DWORD)n;
-    if (!GetComputerNameA(buf, &sz)) return -1;
+    wchar_t wbuf[256];
+    DWORD sz = (DWORD)(sizeof wbuf / sizeof wbuf[0]);
+    if (!GetComputerNameW(wbuf, &sz)) return -1;
+    char *u = wide_to_utf8(wbuf);
+    if (!u) return -1;
+    snprintf(buf, n, "%s", u);
+    free(u);
     return 0;
 #else
     if (gethostname(buf, n) != 0) return -1;
@@ -376,6 +381,130 @@ void sleep_sec(double s) {
     ts.tv_sec = (time_t)s;
     ts.tv_nsec = (long)((s - (double)ts.tv_sec) * 1e9);
     nanosleep(&ts, NULL);
+#endif
+}
+
+/* ===================================================================== */
+/* Windows UTF-8 <-> UTF-16 conversion + UTF-8 path wrappers              */
+/*                                                                       */
+/* The wire protocol and all internal strings are UTF-8. Windows' narrow */
+/* (ANSI) APIs interpret bytes through the active code page, which would */
+/* corrupt non-ASCII input, so every OS boundary transcodes to UTF-16 and */
+/* uses the wide-character API instead. POSIX is byte-transparent and    */
+/* uses the plain standard calls.                                        */
+/* ===================================================================== */
+
+#ifdef _WIN32
+
+wchar_t *utf8_to_wide(const char *s) {
+    if (!s) return NULL;
+    int n = MultiByteToWideChar(CP_UTF8, 0, s, -1, NULL, 0);
+    if (n <= 0) return NULL;
+    wchar_t *w = (wchar_t *)malloc((size_t)n * sizeof(wchar_t));
+    if (!w) return NULL;
+    if (MultiByteToWideChar(CP_UTF8, 0, s, -1, w, n) <= 0) { free(w); return NULL; }
+    return w;
+}
+
+char *wide_to_utf8(const wchar_t *w) {
+    if (!w) return NULL;
+    int n = WideCharToMultiByte(CP_UTF8, 0, w, -1, NULL, 0, NULL, NULL);
+    if (n <= 0) return NULL;
+    char *s = (char *)malloc((size_t)n);
+    if (!s) return NULL;
+    if (WideCharToMultiByte(CP_UTF8, 0, w, -1, s, n, NULL, NULL) <= 0) { free(s); return NULL; }
+    return s;
+}
+
+static char *cp_to_utf8(const char *s, UINT cp) {
+    if (!s) return NULL;
+    int wlen = MultiByteToWideChar(cp, 0, s, -1, NULL, 0);
+    if (wlen <= 0) return xstrdup(s);
+    wchar_t *w = (wchar_t *)malloc((size_t)wlen * sizeof(wchar_t));
+    if (!w) return xstrdup(s);
+    MultiByteToWideChar(cp, 0, s, -1, w, wlen);
+    char *u = wide_to_utf8(w);
+    free(w);
+    return u ? u : xstrdup(s);
+}
+
+char *oem_to_utf8(const char *s) { return cp_to_utf8(s, CP_OEMCP); }
+
+#endif /* _WIN32 */
+
+FILE *iru_fopen(const char *path, const char *mode) {
+#ifdef _WIN32
+    wchar_t *wp = utf8_to_wide(path);
+    wchar_t *wm = utf8_to_wide(mode);
+    FILE *f = (wp && wm) ? _wfopen(wp, wm) : NULL;
+    free(wp);
+    free(wm);
+    return f;
+#else
+    return fopen(path, mode);
+#endif
+}
+
+int iru_remove(const char *path) {
+#ifdef _WIN32
+    wchar_t *wp = utf8_to_wide(path);
+    int r = wp ? _wremove(wp) : -1;
+    free(wp);
+    return r;
+#else
+    return remove(path);
+#endif
+}
+
+int iru_rmdir(const char *path) {
+#ifdef _WIN32
+    wchar_t *wp = utf8_to_wide(path);
+    int r = (wp && RemoveDirectoryW(wp)) ? 0 : -1;
+    free(wp);
+    return r;
+#else
+    return rmdir(path);
+#endif
+}
+
+int iru_rename(const char *oldpath, const char *newpath) {
+#ifdef _WIN32
+    wchar_t *wo = utf8_to_wide(oldpath);
+    wchar_t *wn = utf8_to_wide(newpath);
+    int r = (wo && wn) ? _wrename(wo, wn) : -1;
+    free(wo);
+    free(wn);
+    return r;
+#else
+    return rename(oldpath, newpath);
+#endif
+}
+
+int iru_mkdir(const char *path) {
+#ifdef _WIN32
+    wchar_t *wp = utf8_to_wide(path);
+    int r = wp ? _wmkdir(wp) : -1;
+    free(wp);
+    return r;
+#else
+    return mkdir(path, 0755);
+#endif
+}
+
+char *iru_getcwd(void) {
+#ifdef _WIN32
+    DWORD cap = GetCurrentDirectoryW(0, NULL);
+    if (cap == 0) return NULL;
+    wchar_t *w = (wchar_t *)malloc((size_t)cap * sizeof(wchar_t));
+    if (!w) return NULL;
+    DWORD n = GetCurrentDirectoryW(cap, w);
+    char *s = (n == 0) ? NULL : wide_to_utf8(w);
+    free(w);
+    return s;
+#else
+    char buf[PROTO_MAX_PATH];
+    if (!getcwd(buf, sizeof buf)) return NULL;
+    return xstrdup(buf);
 #endif
 }
 

@@ -18,6 +18,8 @@
 #include <windows.h>
 #include <ws2tcpip.h>
 #include <direct.h>
+#include <wchar.h>
+#include <shellapi.h>
 #define sock_close(s) closesocket(s)
 #define SOCK_ERR INVALID_SOCKET
 typedef SOCKET sockfd_t;
@@ -145,6 +147,25 @@ char    *detect_os(void);
 int      get_hostname(char *buf, size_t n);
 int64_t  now_ms(void);
 void     sleep_sec(double s);
+
+/* ---------- Windows UTF-8 <-> UTF-16 conversion (protocol.c) ---------- */
+#ifdef _WIN32
+wchar_t *utf8_to_wide(const char *s);
+char    *wide_to_utf8(const wchar_t *w);
+char    *oem_to_utf8(const char *s);
+#endif
+
+/* ---------- UTF-8 path wrappers (protocol.c)
+   Internal strings are UTF-8 on every platform. On Windows these transcode
+   to UTF-16 and call the wide-character CRT/Win32 APIs so non-ASCII (e.g.
+   Chinese) paths work; on POSIX they map straight to the byte-oriented
+   standard calls. ---------- */
+FILE    *iru_fopen(const char *path, const char *mode);
+int      iru_remove(const char *path);
+int      iru_rmdir(const char *path);
+int      iru_rename(const char *oldpath, const char *newpath);
+int      iru_mkdir(const char *path);
+char    *iru_getcwd(void);
 
 /* ---------- self-contained SHA-256 (implemented in protocol.c) ---------- */
 void     sha256_digest(const void *data, size_t len, uint8_t out[32]);

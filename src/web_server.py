@@ -72,7 +72,6 @@ def _parse_listing(text: str) -> list:
 
 class WebApp:
     def __init__(self, config_path: str):
-        self._config_path = config_path
         self._cfg = Config(config_path)
         self._registry = AgentRegistry()
         self._controller = Controller(self._cfg, self._registry)
@@ -149,10 +148,12 @@ class WebApp:
         async def set_auth(mode: str = Form(...)):
             try:
                 m = int(mode)
-                self._controller.set_auth_mode(m)
-                return {"success": True, "auth_mode": m}
             except ValueError:
                 return JSONResponse({"success": False, "error": "invalid mode"}, status_code=400)
+            if m not in (0, 1, 2):
+                return JSONResponse({"success": False, "error": "invalid mode"}, status_code=400)
+            self._controller.set_auth_mode(m)
+            return {"success": True, "auth_mode": m}
 
         @self._app.post("/api/reset")
         async def reset():

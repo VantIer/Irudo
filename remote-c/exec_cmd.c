@@ -22,20 +22,6 @@ static int safety_check(const char *cmd) {
 
 #ifdef _WIN32
 
-static char *acp_to_utf8(const char *s) {
-    int wlen = MultiByteToWideChar(CP_ACP, 0, s, -1, NULL, 0);
-    if (wlen <= 0) return xstrdup(s);
-    wchar_t *w = (wchar_t *)malloc((size_t)wlen * sizeof(wchar_t));
-    if (!w) return xstrdup(s);
-    MultiByteToWideChar(CP_ACP, 0, s, -1, w, wlen);
-    int ulen = WideCharToMultiByte(CP_UTF8, 0, w, -1, NULL, 0, NULL, NULL);
-    char *u = (char *)malloc((size_t)ulen);
-    if (!u) { free(w); return xstrdup(s); }
-    WideCharToMultiByte(CP_UTF8, 0, w, -1, u, ulen, NULL, NULL);
-    free(w);
-    return u;
-}
-
 char *run_cmd(const char *cmd, int timeout_sec) {
     if (!cmd || !*cmd) return xstrdup("Error: Empty command");
     if (!safety_check(cmd)) return xstrdup("Error: Command blocked due to safety concerns");
@@ -49,7 +35,7 @@ char *run_cmd(const char *cmd, int timeout_sec) {
         return printf_str("Error: cannot create pipe");
     SetHandleInformation(hOutRd, HANDLE_FLAG_INHERIT, 0);
 
-    STARTUPINFOA si;
+    STARTUPINFOW si;
     memset(&si, 0, sizeof si);
     si.cb = sizeof si;
     si.dwFlags = STARTF_USESTDHANDLES;
@@ -60,12 +46,32 @@ char *run_cmd(const char *cmd, int timeout_sec) {
     PROCESS_INFORMATION pi;
     memset(&pi, 0, sizeof pi);
 
-    char cmdline[32768];
-    _snprintf(cmdline, sizeof cmdline, "cmd.exe /c %s", cmd);
-    cmdline[sizeof cmdline - 1] = 0;
+    /* Build the command line as UTF-16. The incoming cmd is UTF-8; the
+     * narrow CreateProcessA would decode it through the ANSI code page and
+     * corrupt any non-ASCII (e.g. Chinese) command or path. */
+    wchar_t *wcmd = utf8_to_wide(cmd);
+    if (!wcmd) {
+        CloseHandle(hOutWr);
+        CloseHandle(hOutRd);
+        return xstrdup("Error: cannot encode command");
+    }
+    static const wchar_t prefix[] = L"cmd.exe /c ";
+    size_t plen = (sizeof prefix / sizeof prefix[0]) - 1;
+    size_t clen = wcslen(wcmd);
+    wchar_t *wline = (wchar_t *)malloc((plen + clen + 1) * sizeof(wchar_t));
+    if (!wline) {
+        free(wcmd);
+        CloseHandle(hOutWr);
+        CloseHandle(hOutRd);
+        return xstrdup("Error: out of memory");
+    }
+    memcpy(wline, prefix, plen * sizeof(wchar_t));
+    memcpy(wline + plen, wcmd, (clen + 1) * sizeof(wchar_t));
+    free(wcmd);
 
-    BOOL ok = CreateProcessA(NULL, cmdline, NULL, NULL, TRUE,
+    BOOL ok = CreateProcessW(NULL, wline, NULL, NULL, TRUE,
                              CREATE_NO_WINDOW, NULL, NULL, &si, &pi);
+    free(wline);
     CloseHandle(hOutWr);
     if (!ok) {
         CloseHandle(hOutRd);
@@ -122,7 +128,9 @@ char *run_cmd(const char *cmd, int timeout_sec) {
     }
 
     char *raw = sb_take(&out);
-    char *utf8 = acp_to_utf8(raw);
+    /* Console/pipe output from a windowless child is emitted in the OEM
+     * code page, so decode from CP_OEMCP rather than CP_ACP. */
+    char *utf8 = oem_to_utf8(raw);
     free(raw);
     char *result;
     if (utf8 && utf8[0]) {

@@ -9,7 +9,7 @@
 /* ===================================================================== */
 
 static char *slurp(const char *path, size_t *out_len) {
-    FILE *f = fopen(path, "rb");
+    FILE *f = iru_fopen(path, "rb");
     if (!f) return NULL;
     if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
     long sz = ftell(f);
@@ -25,9 +25,9 @@ static char *slurp(const char *path, size_t *out_len) {
 }
 
 static int copy_file(const char *src, const char *dest) {
-    FILE *fin = fopen(src, "rb");
+    FILE *fin = iru_fopen(src, "rb");
     if (!fin) return -1;
-    FILE *fout = fopen(dest, "wb");
+    FILE *fout = iru_fopen(dest, "wb");
     if (!fout) { fclose(fin); return -1; }
     char buf[65536];
     size_t n;
@@ -41,50 +41,78 @@ static int copy_file(const char *src, const char *dest) {
 
 #ifdef _WIN32
 
+/* Build L"<dir>\*" into a fixed buffer. Returns 0 on success. */
+static int wide_glob(const wchar_t *dir, wchar_t *out, size_t cap) {
+    size_t dl = wcslen(dir);
+    if (dl + 3 > cap) return -1;
+    memcpy(out, dir, dl * sizeof(wchar_t));
+    out[dl] = L'\\';
+    out[dl + 1] = L'*';
+    out[dl + 2] = 0;
+    return 0;
+}
+
 static int rmtree(const char *path) {
-    char pattern[PROTO_MAX_PATH];
-    snprintf(pattern, sizeof pattern, "%s\\*", path);
-    WIN32_FIND_DATAA fd;
-    HANDLE h = FindFirstFileA(pattern, &fd);
-    if (h != INVALID_HANDLE_VALUE) {
-        do {
-            if (!strcmp(fd.cFileName, ".") || !strcmp(fd.cFileName, "..")) continue;
-            char full[PROTO_MAX_PATH];
-            snprintf(full, sizeof full, "%s\\%s", path, fd.cFileName);
-            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) rmtree(full);
-            else DeleteFileA(full);
-        } while (FindNextFileA(h, &fd));
-        FindClose(h);
+    wchar_t *wpath = utf8_to_wide(path);
+    if (!wpath) return -1;
+    wchar_t pattern[PROTO_MAX_PATH];
+    int have_glob = (wide_glob(wpath, pattern, PROTO_MAX_PATH) == 0);
+    free(wpath);
+    if (have_glob) {
+        WIN32_FIND_DATAW fd;
+        HANDLE h = FindFirstFileW(pattern, &fd);
+        if (h != INVALID_HANDLE_VALUE) {
+            do {
+                if (!wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L"..")) continue;
+                char *name = wide_to_utf8(fd.cFileName);
+                if (!name) continue;
+                char full[PROTO_MAX_PATH];
+                snprintf(full, sizeof full, "%s\\%s", path, name);
+                free(name);
+                if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) rmtree(full);
+                else iru_remove(full);
+            } while (FindNextFileW(h, &fd));
+            FindClose(h);
+        }
     }
-    RemoveDirectoryA(path);
+    iru_rmdir(path);
     return 0;
 }
 
 static int copy_tree(const char *src, const char *dest) {
     mkdir_p(dest);
-    char pattern[PROTO_MAX_PATH];
-    snprintf(pattern, sizeof pattern, "%s\\*", src);
-    WIN32_FIND_DATAA fd;
-    HANDLE h = FindFirstFileA(pattern, &fd);
+    wchar_t *wsrc = utf8_to_wide(src);
+    if (!wsrc) return -1;
+    wchar_t pattern[PROTO_MAX_PATH];
+    int have_glob = (wide_glob(wsrc, pattern, PROTO_MAX_PATH) == 0);
+    free(wsrc);
+    if (!have_glob) return -1;
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW(pattern, &fd);
     if (h == INVALID_HANDLE_VALUE) return -1;
     do {
-        if (!strcmp(fd.cFileName, ".") || !strcmp(fd.cFileName, "..")) continue;
+        if (!wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L"..")) continue;
+        char *name = wide_to_utf8(fd.cFileName);
+        if (!name) { FindClose(h); return -1; }
         char sp[PROTO_MAX_PATH], dp[PROTO_MAX_PATH];
-        snprintf(sp, sizeof sp, "%s\\%s", src, fd.cFileName);
-        snprintf(dp, sizeof dp, "%s\\%s", dest, fd.cFileName);
+        snprintf(sp, sizeof sp, "%s\\%s", src, name);
+        snprintf(dp, sizeof dp, "%s\\%s", dest, name);
+        free(name);
         if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
             if (copy_tree(sp, dp) != 0) { FindClose(h); return -1; }
         } else if (copy_file(sp, dp) != 0) { FindClose(h); return -1; }
-    } while (FindNextFileA(h, &fd));
+    } while (FindNextFileW(h, &fd));
     FindClose(h);
     return 0;
 }
 
 static char *act_list_dir(const char *path) {
-    char pattern[PROTO_MAX_PATH];
-    snprintf(pattern, sizeof pattern, "%s\\*", path);
-    WIN32_FIND_DATAA fd;
-    HANDLE h = FindFirstFileA(pattern, &fd);
+    wchar_t *wpath = utf8_to_wide(path);
+    wchar_t pattern[PROTO_MAX_PATH];
+    int have_glob = wpath && (wide_glob(wpath, pattern, PROTO_MAX_PATH) == 0);
+    free(wpath);
+    WIN32_FIND_DATAW fd;
+    HANDLE h = have_glob ? FindFirstFileW(pattern, &fd) : INVALID_HANDLE_VALUE;
     if (h == INVALID_HANDLE_VALUE) {
         if (!path_exists(path)) return printf_str("Path does not exist: %s", path);
         if (!is_dir(path)) return printf_str("%s is a file", path);
@@ -94,13 +122,16 @@ static char *act_list_dir(const char *path) {
     sb_init(&out);
     int count = 0;
     do {
-        if (!strcmp(fd.cFileName, ".") || !strcmp(fd.cFileName, "..")) continue;
+        if (!wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L"..")) continue;
+        char *name = wide_to_utf8(fd.cFileName);
+        if (!name) continue;
         int isd = (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
         unsigned long long sz = isd ? 0ULL
             : (((unsigned long long)fd.nFileSizeHigh << 32) | (unsigned long long)fd.nFileSizeLow);
-        sb_printf(&out, "%s %12" IRU_ULL " %s\n", isd ? "DIR" : "FILE", sz, fd.cFileName);
+        sb_printf(&out, "%s %12" IRU_ULL " %s\n", isd ? "DIR" : "FILE", sz, name);
+        free(name);
         count++;
-    } while (FindNextFileA(h, &fd));
+    } while (FindNextFileW(h, &fd));
     FindClose(h);
     if (count == 0) { sb_free(&out); return xstrdup("Empty directory"); }
     return sb_take(&out);
@@ -200,14 +231,9 @@ static void path_with_name(const char *path, const char *new_name, char *out, si
 /* ===================================================================== */
 
 static char *act_get_cwd(void) {
-    char buf[PROTO_MAX_PATH];
-#ifdef _WIN32
-    DWORD n = GetCurrentDirectoryA((DWORD)sizeof buf, buf);
-    if (n == 0) return printf_str("Error getting cwd: %s", "failed");
-#else
-    if (!getcwd(buf, sizeof buf)) return printf_str("Error getting cwd: %s", strerror(errno));
-#endif
-    return xstrdup(buf);
+    char *cwd = iru_getcwd();
+    if (!cwd) return printf_str("Error getting cwd: %s", "failed");
+    return cwd;
 }
 
 static char *act_make_dir(char **p, int n) {
@@ -224,7 +250,7 @@ static char *act_create_file(char **p, int n) {
     const char *path = p[0];
     if (path_exists(path)) return printf_str("File already exists: %s", path);
     make_parent_dirs(path);
-    FILE *f = fopen(path, "wb");
+    FILE *f = iru_fopen(path, "wb");
     if (!f) return printf_str("Error creating file: %s", strerror(errno));
     fclose(f);
     return printf_str("Successfully created file: %s", path);
@@ -237,7 +263,7 @@ static char *act_delete(char **p, int n) {
     if (is_dir(path)) {
         if (rmtree(path) != 0) return printf_str("Error deleting: %s", strerror(errno));
     } else {
-        if (remove(path) != 0) return printf_str("Error deleting: %s", strerror(errno));
+        if (iru_remove(path) != 0) return printf_str("Error deleting: %s", strerror(errno));
     }
     return printf_str("Successfully deleted: %s", path);
 }
@@ -250,7 +276,7 @@ static char *act_rename(char **p, int n) {
     char newpath[PROTO_MAX_PATH];
     path_with_name(path, new_name, newpath, sizeof newpath);
     if (path_exists(newpath)) return printf_str("Target name already exists: %s", new_name);
-    if (rename(path, newpath) != 0) return printf_str("Error renaming: %s", strerror(errno));
+    if (iru_rename(path, newpath) != 0) return printf_str("Error renaming: %s", strerror(errno));
     return printf_str("Successfully renamed: %s -> %s", path, new_name);
 }
 
@@ -327,7 +353,7 @@ static char *act_write_file(char **p, int n) {
     const char *path = p[0];
     const char *content = p[1];
     make_parent_dirs(path);
-    FILE *f = fopen(path, "wb");
+    FILE *f = iru_fopen(path, "wb");
     if (!f) return printf_str("Error writing file: %s", strerror(errno));
     size_t clen = strlen(content);
     if (clen) fwrite(content, 1, clen, f);
@@ -451,7 +477,7 @@ static char *act_edit_file(char **p, int n) {
         return err;
     }
 
-    FILE *f = fopen(path, "wb");
+    FILE *f = iru_fopen(path, "wb");
     if (!f) {
         char *e2 = printf_str("Error editing file: %s", strerror(errno));
         for (int k = 0; k < nlines; k++) free(ll[k].s);
@@ -488,7 +514,7 @@ static char *act_move(char **p, int n) {
     const char *dest = p[1];
     if (!path_exists(src)) return printf_str("Source not found: %s", src);
     make_parent_dirs(dest);
-    if (rename(src, dest) != 0) return printf_str("Error moving: %s", strerror(errno));
+    if (iru_rename(src, dest) != 0) return printf_str("Error moving: %s", strerror(errno));
     return printf_str("Successfully moved: %s -> %s", src, dest);
 }
 

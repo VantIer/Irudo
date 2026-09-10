@@ -289,7 +289,7 @@ class NetworkServer:
             while True:
                 pkt = pr.next_packet()
                 if pkt is not None:
-                    await self._dispatch_packet(stream, pr, info, pkt)
+                    await self._dispatch_packet(stream, info, pkt)
                     continue
                 try:
                     chunk = await stream.read(4096)
@@ -305,7 +305,6 @@ class NetworkServer:
     async def _dispatch_packet(
         self,
         writer: asyncio.StreamWriter,
-        pr: PacketReader,
         info: Optional[AgentInfo],
         pkt,
     ) -> None:

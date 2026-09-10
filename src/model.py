@@ -76,7 +76,11 @@ class ModelModule:
         else:
             print(f"  {action}: {params}")
         print("-" * 50)
-        print("Authorization options: /y /n /y-all /n-all")
+        print("Authorization options: /y /n /auth 0|1|2")
+        print("  /y            allow the current command")
+        print("  /n            deny the current command")
+        print("  /auth 0|1|2   switch mode, then re-evaluate the current command")
+        print("  /auth         show the current mode")
         print("-" * 50)
         while True:
             auth = input("\nYour choice: ").strip().lower()
@@ -84,12 +88,18 @@ class ModelModule:
                 return AuthResult(True, command)
             elif auth == "/n":
                 return AuthResult(False, command)
-            elif auth == "/y-all":
-                self._controller.set_auth_mode(1)
-                return AuthResult(True, command)
-            elif auth == "/n-all":
-                self._controller.set_auth_mode(0)
-                return AuthResult(False, command)
+            elif auth.startswith("/auth"):
+                parts = auth.split()
+                if len(parts) == 1:
+                    print(f"Current auth mode: {self._controller.get_auth_mode()}")
+                    continue
+                if len(parts) == 2 and parts[1] in ("0", "1", "2"):
+                    self._controller.set_auth_mode(int(parts[1]))
+                    if not self._controller.requires_auth(action):
+                        return AuthResult(True, command)
+                    print(f"Auth mode set to {parts[1]}. The current command still requires authorization.")
+                    continue
+                print("Usage: /auth [0|1|2]")
 
     def _llm_call_sync(self, messages: list, stream_to_stdout: bool = True) -> str:
         """Run the (sync, streaming) LLM call and return the full text."""
@@ -216,13 +226,13 @@ class ModelModule:
                         executions.append((f"[{action}]", "Error: Command blocked due to safety concerns"))
                         continue
 
-                    if self._controller.get_auth_mode() == 0:
-                        iteration = 0
+                    if self._controller.requires_auth(action):
                         ar = await asyncio.to_thread(self._prompt_auth, cmd)
                         if not ar.authorized:
                             executions.append((f"[{action}]", "Error: User denied command execution"))
                             user_denied = True
                             continue
+                        iteration = 0
 
                     cmd_code = action_to_cmd(action)
                     if cmd_code < 0:
@@ -273,13 +283,11 @@ class ModelModule:
     def _round_limit_reached(self, iteration: int) -> bool:
         """True when the conversation loop must stop due to round_limit.
 
-        The limit only applies in auto-authorize mode (auth_mode == 1).
-        When user authorization is required (auth_mode == 0) the round
-        limit is not enforced: the conversation may keep iterating as
-        long as the user keeps approving commands.
+        The counter is independent of the authorization mode: rounds that
+        execute without an approved authorization accumulate and are capped
+        by ``round_limit``; an approved authorization resets the counter to
+        zero. This is enforced in every mode.
         """
-        if self._controller.get_auth_mode() != 1:
-            return False
         return iteration >= self._controller.get_config().round_limit
 
     def begin_chat(self, message: str, agent_id: Optional[str] = None) -> Optional[str]:
@@ -465,8 +473,7 @@ class ModelModule:
                             self._push_event(agent_id, {"type": "execution_done", "results": all_results[-1:]})
                             continue
 
-                        if self._controller.get_auth_mode() == 0:
-                            iteration = 0
+                        if self._controller.requires_auth(action):
                             st.update({"iteration": iteration, "turn": turn, "phase": "auth_wait", "pending_command": cmd})
                             self._push_event(agent_id, {"type": "auth_required", "commands": [cmd]})
                             self._push_event(agent_id, {"type": "waiting_auth", "iteration": iteration, "turn": turn})
@@ -483,6 +490,7 @@ class ModelModule:
                                 st["results"] = list(all_results)
                                 self._push_event(agent_id, {"type": "execution_done", "results": all_results[-1:]})
                                 continue
+                            iteration = 0
 
                         self._push_event(agent_id, {"type": "executing", "commands": [cmd]})
                         cmd_code = action_to_cmd(action)
@@ -539,7 +547,9 @@ class ModelModule:
         while not ev.is_set():
             if self._stop_requested_for(agent_id):
                 return False
-            if self._controller.get_auth_mode() == 1:
+            st = self._conv_states.get(agent_id) or {}
+            pending = st.get("pending_command") or {}
+            if not self._controller.requires_auth(pending.get("action", "")):
                 return True
             remaining = deadline - time.time()
             if remaining <= 0:

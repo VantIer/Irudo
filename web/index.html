@@ -338,22 +338,6 @@
             border-top-left-radius: 4px;
             box-shadow: inset 0 1px 0 var(--result-hi);
         }
-        .msg.result .cmd-block {
-            background: var(--result-inner);
-            border: none;
-            box-shadow: inset 0 1px 0 var(--result-hi);
-        }
-        .msg .cmd-block {
-            background: var(--surface);
-            border: 1px solid var(--border);
-            border-radius: 10px;
-            padding: 10px 12px;
-            margin-top: 8px;
-            font-family: "SFMono-Regular", "JetBrains Mono", Consolas, monospace;
-            font-size: 12.5px;
-            white-space: pre-wrap;
-            word-break: break-all;
-        }
         .collapsible-content { max-height: 220px; overflow: hidden; position: relative; transition: max-height 0.3s; }
         .collapsible-content.expanded { max-height: none; }
         .collapsible-content::after {
@@ -500,10 +484,68 @@
         }
         .drawer h3:first-child { margin-top: 0; }
         .drawer .divider { height: 1px; background: var(--border); margin: 20px 0; }
-        .status-row { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; font-size: 13.5px; }
-        .status-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--danger); }
-        .status-dot.authorized { background: var(--success); }
         .drawer .btn { width: 100%; margin-top: 8px; }
+
+        .auth-segmented {
+            position: relative;
+            display: flex;
+            padding: 3px;
+            background: var(--surface-2);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+        }
+        .auth-seg-thumb {
+            position: absolute;
+            top: 3px;
+            bottom: 3px;
+            left: 3px;
+            width: calc((100% - 6px) / 3);
+            background: var(--surface);
+            border-radius: 9px;
+            box-shadow: var(--shadow-sm);
+            transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+            z-index: 0;
+        }
+        .auth-seg {
+            position: relative;
+            z-index: 1;
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            border: none;
+            background: transparent;
+            color: var(--text-2);
+            font-family: inherit;
+            font-size: 12px;
+            font-weight: 600;
+            padding: 8px 4px;
+            border-radius: 9px;
+            cursor: pointer;
+            white-space: nowrap;
+            transition: color 0.2s;
+        }
+        .auth-seg.active { color: var(--text); }
+        .auth-seg-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            flex-shrink: 0;
+            opacity: 0;
+            transform: scale(0.5);
+            transition: opacity 0.2s, transform 0.2s;
+        }
+        .auth-seg.active .auth-seg-dot { opacity: 1; transform: scale(1); }
+        .auth-seg[data-mode="0"] .auth-seg-dot { background: var(--danger); }
+        .auth-seg[data-mode="1"] .auth-seg-dot { background: var(--warning); }
+        .auth-seg[data-mode="2"] .auth-seg-dot { background: var(--success); }
+        .auth-desc {
+            margin-top: 10px;
+            font-size: 12px;
+            line-height: 1.5;
+            color: var(--text-2);
+        }
 
         /* ---------- Modal ---------- */
         .modal {
@@ -667,11 +709,13 @@
 
             <div class="divider"></div>
             <h3>Authorization</h3>
-            <div class="status-row">
-                <span class="status-dot" id="authDot"></span>
-                <span id="authStatus">Authorization Required</span>
+            <div class="auth-segmented" id="authSegmented" role="radiogroup" aria-label="Authorization mode">
+                <div class="auth-seg-thumb" id="authThumb"></div>
+                <button class="auth-seg active" data-mode="0" role="radio" aria-checked="true"><span class="auth-seg-dot"></span>N-Auto</button>
+                <button class="auth-seg" data-mode="1" role="radio" aria-checked="false"><span class="auth-seg-dot"></span>H-Auto</button>
+                <button class="auth-seg" data-mode="2" role="radio" aria-checked="false"><span class="auth-seg-dot"></span>F-Auto</button>
             </div>
-            <button class="btn" id="authToggle"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg><span class="lbl">Enable Auto Auth</span></button>
+            <div class="auth-desc" id="authDesc"></div>
 
             <div class="divider"></div>
             <h3>Session</h3>
@@ -746,10 +790,9 @@
         const sendBtn = document.getElementById('sendBtn');
         const cmdModal = document.getElementById('cmdModal');
         const modalCommands = document.getElementById('modalCommands');
-        const authDot = document.getElementById('authDot');
-        const authStatus = document.getElementById('authStatus');
-        const authToggle = document.getElementById('authToggle');
-        const authToggleText = authToggle.querySelector('.lbl');
+        const authSegmented = document.getElementById('authSegmented');
+        const authThumb = document.getElementById('authThumb');
+        const authDesc = document.getElementById('authDesc');
         const resetBtn = document.getElementById('resetBtn');
         const sidebar = document.getElementById('sidebar');
         const filesPanel = document.getElementById('filesPanel');
@@ -911,50 +954,32 @@
             chatScroll.scrollTop = chatScroll.scrollHeight;
         }
 
+        const AUTH_DESCRIPTIONS = [
+            'No-Auto: every command requires your authorization before execution.',
+            'Half-Auto: read/list commands (get_cwd, list_dir, read_file) run automatically; create, delete, edit and execute commands require authorization.',
+            'Full-Auto: all commands run automatically without authorization.',
+        ];
+
         function updateAuthUI(authMode) {
-            const isAuto = authMode === 1;
-            if (isAuto) {
-                authDot.classList.add('authorized');
-                authStatus.textContent = 'Auto Authorized';
-                authToggleText.textContent = 'Require Authorization';
-            } else {
-                authDot.classList.remove('authorized');
-                authStatus.textContent = 'Authorization Required';
-                authToggleText.textContent = 'Enable Auto Auth';
-            }
+            const mode = (authMode === 1 || authMode === 2) ? authMode : 0;
+            authThumb.style.transform = `translateX(${mode * 100}%)`;
+            authSegmented.querySelectorAll('.auth-seg').forEach(btn => {
+                const active = Number(btn.dataset.mode) === mode;
+                btn.classList.toggle('active', active);
+                btn.setAttribute('aria-checked', active ? 'true' : 'false');
+            });
+            authDesc.textContent = AUTH_DESCRIPTIONS[mode];
         }
 
         // ---------------- chat ----------------
-        function addMessage(content, type, commands = null) {
+        function addMessage(content, type) {
             const div = document.createElement('div');
             div.className = 'msg ' + type;
-            let displayText = String(content ?? '');
+            const displayText = String(content ?? '');
 
-            if (commands && commands.length > 0) {
-                const parts = displayText.split(/(```json\n?[\s\S]*?```)/g);
-                parts.forEach(part => {
-                    if (part.match(/^```json\n?([\s\S]*?)```$/)) {
-                        const json = part.replace(/^```json\n?([\s\S]*?)```$/, '$1');
-                        const cmdDiv = document.createElement('div');
-                        cmdDiv.className = 'cmd-block';
-                        try {
-                            const obj = JSON.parse(json);
-                            cmdDiv.textContent = 'Action: ' + obj.action + '\n' + JSON.stringify(obj, null, 2);
-                        } catch {
-                            cmdDiv.textContent = json;
-                        }
-                        div.appendChild(cmdDiv);
-                    } else {
-                        const span = document.createElement('span');
-                        span.textContent = part;
-                        div.appendChild(span);
-                    }
-                });
-            } else {
-                const span = document.createElement('span');
-                span.textContent = displayText;
-                div.appendChild(span);
-            }
+            const span = document.createElement('span');
+            span.textContent = displayText;
+            div.appendChild(span);
 
             if ((type === 'system' || type === 'result') && displayText.length > 500) {
                 const wrapper = document.createElement('div');
@@ -980,7 +1005,6 @@
         const typingIndicator = document.createElement('div');
         typingIndicator.className = 'typing hidden';
         typingIndicator.innerHTML = '<div class="typing-dots"><span></span><span></span><span></span></div><span class="typing-text">AI is thinking...</span>';
-        chatBox.appendChild(typingIndicator);
 
         function setTyping(text, show) {
             if (show) {
@@ -1198,11 +1222,11 @@
             await submitAuth(true);
         });
 
-        authToggle.addEventListener('click', async () => {
-            const currentMode = document.getElementById('authStatus').textContent;
-            const newMode = currentMode.includes('Required') ? '1' : '0';
+        authSegmented.addEventListener('click', async (e) => {
+            const btn = e.target.closest('.auth-seg');
+            if (!btn) return;
             const formData = new FormData();
-            formData.append('mode', newMode);
+            formData.append('mode', btn.dataset.mode);
             await fetch('/api/set-auth', { method: 'POST', body: formData });
             await loadConfig();
         });

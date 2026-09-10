@@ -27,7 +27,6 @@ class AgentInfo:
     conversation_history: List[dict] = field(default_factory=list)
     pending: Dict[int, asyncio.Future] = field(default_factory=dict)
     data_queues: Dict[int, asyncio.Queue] = field(default_factory=dict)
-    auth_token_valid: bool = True
     next_request_id_min: int = 1_000_000
     write_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     # High-level instruction lock: serializes commands / file transfers on

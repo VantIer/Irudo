@@ -24,6 +24,13 @@ from src.controller import Controller
 from src.model import ModelModule
 
 
+AUTH_MODE_LABELS = {
+    0: "N-Auto (all commands require authorization)",
+    1: "H-Auto (low-risk auto, high-risk requires authorization)",
+    2: "F-Auto (auto-authorize all commands)",
+}
+
+
 def print_help():
     print("\nAvailable commands:")
     print("  /quit        - Exit the program")
@@ -31,14 +38,14 @@ def print_help():
     print("  /reset       - Reset conversation history for the active Agent")
     print("  /agents      - List connected Agents")
     print("  /target <id> - Switch active Agent (and its LLM session)")
-    print("  /y-all       - Auto-authorize subsequent commands")
-    print("  /n-all       - Require authorization for subsequent commands")
+    print("  /auth 0|1|2  - Show/switch authorization mode (0=N-Auto, 1=H-Auto, 2=F-Auto)")
     print("  /upload <local> <dest>  - Upload local file to active Agent")
     print("  /download <src>         - Download file from active Agent to program dir")
     print("  /shutdown               - Shut down the active Agent (disconnect + exit)")
     print("\nDuring authorization prompts:")
-    print("  /y      - Allow the current command")
-    print("  /n      - Deny the current command")
+    print("  /y            - Allow the current command")
+    print("  /n            - Deny the current command")
+    print("  /auth [0|1|2] - Show/switch mode, then re-evaluate the current command")
     print()
 
 
@@ -65,7 +72,7 @@ async def cli_main(config_path: str):
     print(f"Model: {cfg.model}")
     print(f"API Base: {cfg.api_base}")
     print(f"C2 Network: {cfg.c2_host}:{server.port}")
-    print(f"Auth Mode: {'Auto-authorized' if controller.get_auth_mode() == 1 else 'Authorization required'}")
+    print(f"Auth Mode: {AUTH_MODE_LABELS.get(controller.get_auth_mode(), 'Unknown')}")
     print("=" * 60)
     print("\nCommands:")
     print_help()
@@ -117,14 +124,18 @@ async def cli_main(config_path: str):
                     print(f"No such agent: {target}")
                 continue
 
-            if user_input.lower() == "/n-all":
-                controller.set_auth_mode(0)
-                print("Authorization required for all commands.")
-                continue
-
-            if user_input.lower() == "/y-all":
-                controller.set_auth_mode(1)
-                print("Auto-authorization enabled for all commands.")
+            if user_input.lower() == "/auth" or user_input.lower().startswith("/auth "):
+                parts = user_input.split()
+                if len(parts) == 1:
+                    mode = controller.get_auth_mode()
+                    print(f"Current auth mode: {mode} ({AUTH_MODE_LABELS.get(mode, 'Unknown')})")
+                    continue
+                if len(parts) == 2 and parts[1] in ("0", "1", "2"):
+                    mode = int(parts[1])
+                    controller.set_auth_mode(mode)
+                    print(f"Auth mode set to {mode} ({AUTH_MODE_LABELS.get(mode)}).")
+                    continue
+                print("Usage: /auth [0|1|2]")
                 continue
 
             if user_input.lower().startswith("/upload "):

@@ -15,6 +15,9 @@ from common.protocol import ACTION_CMDS, ACTION_NAME_TO_CMD
 
 FORBIDDEN_PATTERNS = ["rm -rf /"]
 
+# Read-only / listing actions that never modify the target system.
+LOW_RISK_ACTIONS = {"get_cwd", "list_dir", "read_file"}
+
 
 def check_safety(cmd: str) -> bool:
     cmd_lower = cmd.lower()
@@ -22,6 +25,25 @@ def check_safety(cmd: str) -> bool:
         if pattern.lower() in cmd_lower:
             return False
     return True
+
+
+def is_low_risk(action: str) -> bool:
+    """True for read-only / listing actions (no side effects on the target)."""
+    return action in LOW_RISK_ACTIONS
+
+
+def requires_auth(auth_mode: int, action: str) -> bool:
+    """Decide whether ``action`` needs explicit user authorization.
+
+    auth_mode: 0 = N-Auto, every command requires authorization;
+    1 = H-Auto, only high-risk commands require authorization (low-risk
+    commands auto-execute); 2 = F-Auto, nothing requires authorization.
+    """
+    if auth_mode == 0:
+        return True
+    if auth_mode == 2:
+        return False
+    return not is_low_risk(action)
 
 
 def action_to_cmd(action: str) -> int:

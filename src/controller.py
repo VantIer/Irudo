@@ -9,7 +9,10 @@ import threading
 
 from src.c2.agent_registry import AgentRegistry
 from src.c2.forwarder import Forwarder
+from src.command import is_low_risk, requires_auth
 from src.config import Config
+
+VALID_AUTH_MODES = (0, 1, 2)
 
 
 class Controller:
@@ -42,8 +45,17 @@ class Controller:
             return self._auth_mode
 
     def set_auth_mode(self, mode: int):
+        if mode not in VALID_AUTH_MODES:
+            return
         with self._lock:
             self._auth_mode = mode
+
+    def requires_auth(self, action: str) -> bool:
+        """Whether ``action`` needs explicit authorization under the current mode."""
+        return requires_auth(self.get_auth_mode(), action)
+
+    def is_low_risk(self, action: str) -> bool:
+        return is_low_risk(action)
 
     def get_config(self) -> Config:
         return self._config

